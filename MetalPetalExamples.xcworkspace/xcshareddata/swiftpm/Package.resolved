@@ -1,0 +1,15 @@
+{
+  "originHash" : "5cef32c319567bb3341c0d0b50fddea80e978ae6ba1c28c41ed5b2763fdad262",
+  "pins" : [
+    {
+      "identity" : "videoio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mat2uken/VideoIO",
+      "state" : {
+        "branch" : "master",
+        "revision" : "ad26a9d22b48662873db4e60bd9f5034936974b3"
+      }
+    }
+  ],
+  "version" : 3
+}

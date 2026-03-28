@@ -344,7 +344,7 @@
 			);
 			mainGroup = 9D49296C261E19E70011E8AF;
 			packageReferences = (
-				9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */,
+				9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */,
 			);
 			productRefGroup = 9D49297A261E19E80011E8AF /* Products */;
 			projectDirPath = "";
@@ -778,22 +778,26 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../VideoIO;
+/* Begin XCRemoteSwiftPackageReference section */
+		9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mat2uken/VideoIO";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		9D492A0B261E1D320011E8AF /* VideoIO */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */;
+			package = 9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */;
 			productName = VideoIO;
 		};
 		9D492A0F261E1D420011E8AF /* VideoIO */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */;
+			package = 9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */;
 			productName = VideoIO;
 		};
 /* End XCSwiftPackageProductDependency section */
