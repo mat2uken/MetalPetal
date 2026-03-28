@@ -344,7 +344,7 @@
 			);
 			mainGroup = 9D49296C261E19E70011E8AF;
 			packageReferences = (
-				9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */,
+				9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */,
 			);
 			productRefGroup = 9D49297A261E19E80011E8AF /* Products */;
 			projectDirPath = "";
@@ -664,7 +664,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = YWAZZNBUPH;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/iOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -686,7 +685,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = YWAZZNBUPH;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/iOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -711,7 +709,6 @@
 				CODE_SIGN_ENTITLEMENTS = MetalPetalExamples/macOS/macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = YWAZZNBUPH;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/macOS/Info.plist;
@@ -735,7 +732,6 @@
 				CODE_SIGN_ENTITLEMENTS = MetalPetalExamples/macOS/macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEVELOPMENT_TEAM = YWAZZNBUPH;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/macOS/Info.plist;
@@ -782,26 +778,22 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/MetalPetal/VideoIO";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.1;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../VideoIO;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		9D492A0B261E1D320011E8AF /* VideoIO */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */;
+			package = 9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */;
 			productName = VideoIO;
 		};
 		9D492A0F261E1D420011E8AF /* VideoIO */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D492A0A261E1D320011E8AF /* XCRemoteSwiftPackageReference "VideoIO" */;
+			package = 9D492A0A261E1D320011E8AF /* XCLocalSwiftPackageReference "../VideoIO" */;
 			productName = VideoIO;
 		};
 /* End XCSwiftPackageProductDependency section */
