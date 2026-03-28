@@ -26,7 +26,7 @@ Replace this paragraph with a short description of the incorrect behavior.
  Info                    | Value                               |
 -------------------------|-------------------------------------|
  MetalPetal Version      | e.g. 1.13.0
- Integration Method      | e.g. CocoaPods / SwiftPM
+ Integration Method      | e.g. SwiftPM / source checkout
  Platform & Version      | e.g. iOS 14.0 / macOS 10.15
  Device                  | e.g. MacBook Pro 16' / iPhone X
 

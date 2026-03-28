@@ -52,15 +52,11 @@ static NSBundle * MTIDefaultBuiltinLibraryBundle(void) {
         #ifdef SWIFTPM_MODULE_BUNDLE
         bundle = SWIFTPM_MODULE_BUNDLE;
         #else
-            #if METALPETAL_DEFAULT_LIBRARY_IN_BUNDLE
-            bundle = [NSBundle bundleWithURL:[[NSBundle bundleForClass:MTIContext.class] URLForResource:@"MetalPetal" withExtension:@"bundle"]];
+            // TODO: Remove this in swift 5.3. https://github.com/apple/swift-evolution/blob/master/proposals/0271-package-manager-resources.md
+            #if __has_include("MTISwiftPMBuiltinLibrarySupport.h")
+            bundle = nil;
             #else
-                // TODO: Remove this in swift 5.3. https://github.com/apple/swift-evolution/blob/master/proposals/0271-package-manager-resources.md
-                #if __has_include("MTISwiftPMBuiltinLibrarySupport.h")
-                bundle = nil;
-                #else
-                bundle = [NSBundle bundleForClass:MTIContext.class];
-                #endif
+            bundle = [NSBundle bundleForClass:MTIContext.class];
             #endif
         #endif
     });

@@ -9,7 +9,6 @@
 [![Mac Catalyst](https://img.shields.io/badge/Mac%20Catalyst-%E2%80%8B%20%E2%9C%94-eee)](#)
 [![Simulator](https://img.shields.io/badge/Simulator-%E2%80%8B%20%E2%9C%94-eee)](#)
 <br/>
-[![CocoaPods](https://img.shields.io/static/v1?label=CocoaPods&message=%E2%80%8B%20%E2%9C%94&color=eee&logo=CocoaPods&logoColor=white)](#cocoapods)
 [![Swift PM](https://img.shields.io/static/v1?label=Swift%20PM&message=%E2%80%8B%20%E2%9C%94&color=eee&logo=Swift&logoColor=white)](#swift-package-manager)
 
 An image processing framework based on Metal.
@@ -57,9 +56,6 @@ An image processing framework based on Metal.
     - [Working with JavaScript](#working-with-javascript)
     - [Texture Loader](#texture-loader)
 - [Install](#install)
-    - [CocoaPods](#cocoapods)
-        - [Sub-pod `Swift`](#sub-pod-swift)
-        - [Sub-pod `AppleSilicon`](#sub-pod-applesilicon)
     - [Swift Package Manager](#swift-package-manager)
 - [iOS Simulator Support](#ios-simulator-support)
 - [Quick Look Debug Support](#quick-look-debug-support)
@@ -464,7 +460,7 @@ Please refer to the `CameraFilterView.swift` in the example project for more abo
 
 If you want to include the `MTIShaderLib.h` in your `.metal` file, you need to add the path of `MTIShaderLib.h` file to the `Metal Compiler - Header Search Paths` (`MTL_HEADER_SEARCH_PATHS`) setting.
 
-For example, if you use CocoaPods you can set the `MTL_HEADER_SEARCH_PATHS` to  `${PODS_CONFIGURATION_BUILD_DIR}/MetalPetal/MetalPetal.framework/Headers` or `${PODS_ROOT}/MetalPetal/Frameworks/MetalPetal/Shaders`. If you use Swift Package Manager, set the `MTL_HEADER_SEARCH_PATHS` to `$(HEADER_SEARCH_PATHS)`
+If you use Swift Package Manager or a local package reference, set `MTL_HEADER_SEARCH_PATHS` to `$(HEADER_SEARCH_PATHS)`.
 
 ### Shader Function Arguments Encoding
 
@@ -658,10 +654,6 @@ Objective-C
 Swift
 
 ```
-// CocoaPods
-import MetalPetal.Extension
-
-// Swift Package Manager
 import MetalPetalObjectiveC.Extension
 ```
 
@@ -779,31 +771,6 @@ It is recommended that you use APIs that accept `MTICGImageLoadingOptions` to lo
 When you use APIs that accept `MTKTextureLoaderOption`, MetalPetal, by default, uses `MTIDefaultTextureLoader` to load `CGImage`s, images from `URL`, and named images. `MTIDefaultTextureLoader` uses `MTKTextureLoader` internally and has some workarounds for `MTKTextureLoader`'s inconsistencies and bugs at a small performance cost. You can also create your own texture loader by implementing the `MTITextureLoader` protocol. Then assign your texture loader class to `MTIContextOptions.textureLoaderClass` when creating a `MTIContext`.
 
 ## Install
-
-### CocoaPods
-
-You can use [CocoaPods](https://cocoapods.org/) to install the latest version.
-
-```
-use_frameworks!
-
-pod 'MetalPetal'
-
-# Required if you are using Swift.
-pod 'MetalPetal/Swift'
-
-# Recommended if you'd like to run MetalPetal on Apple silicon Macs.
-pod 'MetalPetal/AppleSilicon'
-
-```
-
-#### Sub-pod `Swift`
-
-Provides Swift-specific additions and modifications to the Objective-C APIs to improve their mapping into Swift. Highly recommended if you are using Swift.
-
-#### Sub-pod `AppleSilicon`
-
-Provides the default shader library compiled in Metal Shading Language v2.3 which is required for enabling programmable blending support on Apple silicon Macs.
 
 ### Swift Package Manager
 
