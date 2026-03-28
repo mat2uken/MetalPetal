@@ -247,6 +247,8 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
 @property (nonatomic, strong, readonly) NSMapTable<id<MTIImagePromise>, MTIImagePromiseRenderTarget *> *promiseRenderTargetTable;
 @property (nonatomic, strong, readonly) id<MTILocking> promiseRenderTargetTableLock;
 
+@property (nonatomic, strong, readonly) NSCache<id<NSCopying>, id<MTLTexture>> *sourceTextureCache;
+
 @property (nonatomic, strong, readonly) id<MTILocking> renderingLock;
 
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *defaultLibraryFunctionShort2FullNames;
@@ -370,6 +372,10 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
         
         _promiseRenderTargetTable = [[NSMapTable alloc] initWithKeyOptions:NSPointerFunctionsWeakMemory|NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsWeakMemory capacity:0];
         _promiseRenderTargetTableLock = MTILockCreate();
+
+        _sourceTextureCache = [[NSCache alloc] init];
+        _sourceTextureCache.name = [options.label stringByAppendingString:@".sourceTextureCache"];
+        _sourceTextureCache.totalCostLimit = 128 * 1024 * 1024;
         
         _renderingLock = MTILockCreate();
         
@@ -417,6 +423,8 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
     [_coreVideoTextureBridge flushCache];
     
     [_coreImageContext clearCaches];
+
+    [_sourceTextureCache removeAllObjects];
     
     [_imageKeyValueTablesLock lock];
     for (NSString *key in _imageKeyValueTables) {
@@ -808,6 +816,17 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
     [_promiseRenderTargetTableLock lock];
     [_promiseRenderTargetTable setObject:renderTarget forKey:promise];
     [_promiseRenderTargetTableLock unlock];
+}
+
+- (id<MTLTexture>)sourceTextureForKey:(id<NSCopying>)key {
+    NSParameterAssert(key);
+    return [self.sourceTextureCache objectForKey:key];
+}
+
+- (void)setSourceTexture:(id<MTLTexture>)texture forKey:(id<NSCopying>)key cost:(NSUInteger)cost {
+    NSParameterAssert(texture);
+    NSParameterAssert(key);
+    [self.sourceTextureCache setObject:texture forKey:key cost:cost];
 }
 
 - (MTIImagePromiseRenderTarget *)renderTargetForPromise:(id<MTIImagePromise>)promise {

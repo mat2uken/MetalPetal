@@ -20,6 +20,21 @@
 #import "MTITextureLoader.h"
 #import "MTIDefer.h"
 
+static NSUInteger MTISourceTextureCacheCost(id<MTLTexture> texture) {
+    if ([texture respondsToSelector:@selector(allocatedSize)]) {
+        return texture.allocatedSize;
+    }
+    return texture.width * MAX(texture.height, 1) * MAX(texture.depth, 1) * 4;
+}
+
+static void MTIOptimizeTextureContentsForGPUAccess(MTIImageRenderingContext *renderingContext, id<MTLTexture> texture) {
+    if (@available(iOS 12.0, macOS 10.14, *)) {
+        id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
+        [blitCommandEncoder optimizeContentsForGPUAccess:texture];
+        [blitCommandEncoder endEncoding];
+    }
+}
+
 @interface MTIImageURLPromise ()
 
 @property (nonatomic, copy, readonly) NSURL *URL;
@@ -62,15 +77,19 @@
         [renderingContext.context recordPerformanceCounter:@"promise.url.resolve.count" increment:1];
         [renderingContext.context recordPerformanceDuration:@"promise.url.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
     };
-    id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithContentsOfURL:self.URL options:self.options error:error];
+    id<NSCopying> cacheKey = @[@"url", self.URL, self.options ?: @{}];
+    id<MTLTexture> texture = [renderingContext.context sourceTextureForKey:cacheKey];
+    if (texture) {
+        [renderingContext.context recordPerformanceCounter:@"promise.url.sourceTextureCache.hit" increment:1];
+        return [renderingContext.context newRenderTargetWithTexture:texture];
+    }
+    [renderingContext.context recordPerformanceCounter:@"promise.url.sourceTextureCache.miss" increment:1];
+    texture = [renderingContext.context.textureLoader newTextureWithContentsOfURL:self.URL options:self.options error:error];
     if (!texture) {
         return nil;
     }
-    if (@available(iOS 12.0, macOS 10.14, *)) {
-        id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
-        [blitCommandEncoder optimizeContentsForGPUAccess:texture];
-        [blitCommandEncoder endEncoding];
-    }
+    MTIOptimizeTextureContentsForGPUAccess(renderingContext, texture);
+    [renderingContext.context setSourceTexture:texture forKey:cacheKey cost:MTISourceTextureCacheCost(texture)];
     return [renderingContext.context newRenderTargetWithTexture:texture];
 }
 
@@ -125,15 +144,19 @@
         [renderingContext.context recordPerformanceCounter:@"promise.legacyCGImage.resolve.count" increment:1];
         [renderingContext.context recordPerformanceDuration:@"promise.legacyCGImage.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
     };
-    id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:self.options error:error];
+    id<NSCopying> cacheKey = @[@"legacy-cgimage", @((uintptr_t)self.image), self.options ?: @{}];
+    id<MTLTexture> texture = [renderingContext.context sourceTextureForKey:cacheKey];
+    if (texture) {
+        [renderingContext.context recordPerformanceCounter:@"promise.legacyCGImage.sourceTextureCache.hit" increment:1];
+        return [renderingContext.context newRenderTargetWithTexture:texture];
+    }
+    [renderingContext.context recordPerformanceCounter:@"promise.legacyCGImage.sourceTextureCache.miss" increment:1];
+    texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:self.options error:error];
     if (!texture) {
         return nil;
     }
-    if (@available(iOS 12.0, macOS 10.14, *)) {
-        id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
-        [blitCommandEncoder optimizeContentsForGPUAccess:texture];
-        [blitCommandEncoder endEncoding];
-    }
+    MTIOptimizeTextureContentsForGPUAccess(renderingContext, texture);
+    [renderingContext.context setSourceTexture:texture forKey:cacheKey cost:MTISourceTextureCacheCost(texture)];
     return [renderingContext.context newRenderTargetWithTexture:texture];
 }
 
@@ -247,6 +270,23 @@
     size_t displayHeight = _properties.displayHeight;
     CGColorSpaceRef imageColorSpace = CGImageGetColorSpace(_image);
     CGColorSpaceRef specifiedColorSpace = _options.colorSpace ?: imageColorSpace;
+    id<NSCopying> cacheKey = @[
+        @"cgimage",
+        @((uintptr_t)self.image),
+        @(_properties.orientation),
+        @((uintptr_t)_options.colorSpace),
+        @(_options.flipsVertically),
+        @(_options.storageMode),
+        @(_options.cpuCacheMode)
+    ];
+    id<MTLTexture> texture = [renderingContext.context sourceTextureForKey:cacheKey];
+    BOOL textureFromCache = (texture != nil);
+    BOOL textureOptimized = NO;
+    if (textureFromCache) {
+        [renderingContext.context recordPerformanceCounter:@"promise.cgImage.sourceTextureCache.hit" increment:1];
+    } else {
+        [renderingContext.context recordPerformanceCounter:@"promise.cgImage.sourceTextureCache.miss" increment:1];
+    }
     BOOL usesIdentityGeometry = (_properties.orientation == kCGImagePropertyOrientationUp &&
                                  !_options.flipsVertically &&
                                  pixelWidth == displayWidth &&
@@ -257,103 +297,115 @@
                                         CGColorSpaceGetModel(specifiedColorSpace) == kCGColorSpaceModelRGB &&
                                         CGColorSpaceGetModel(imageColorSpace) == kCGColorSpaceModelRGB &&
                                         CFEqual(specifiedColorSpace, imageColorSpace));
-    if (canUseTextureLoaderFastPath) {
+    MTITextureDescriptor *reusableTextureDescriptor = nil;
+    if (!texture && canUseTextureLoaderFastPath) {
         NSDictionary<MTKTextureLoaderOption, id> *textureLoaderOptions = @{
             MTKTextureLoaderOptionSRGB: @NO,
             MTKTextureLoaderOptionTextureStorageMode: @(_options.storageMode),
             MTKTextureLoaderOptionTextureCPUCacheMode: @(_options.cpuCacheMode)
         };
         NSError *textureLoaderError = nil;
-        id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:textureLoaderOptions error:&textureLoaderError];
+        texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:textureLoaderOptions error:&textureLoaderError];
         if (texture) {
-            if (@available(iOS 12.0, macOS 10.14, *)) {
-                id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
-                [blitCommandEncoder optimizeContentsForGPUAccess:texture];
-                [blitCommandEncoder endEncoding];
-            }
+            MTIOptimizeTextureContentsForGPUAccess(renderingContext, texture);
+            textureOptimized = YES;
             [renderingContext.context recordPerformanceCounter:@"promise.cgImage.fastPath.textureLoader.hit" increment:1];
-            return [renderingContext.context newRenderTargetWithTexture:texture];
+        } else {
+            [renderingContext.context recordPerformanceCounter:@"promise.cgImage.fastPath.textureLoader.fallback" increment:1];
         }
-        [renderingContext.context recordPerformanceCounter:@"promise.cgImage.fastPath.textureLoader.fallback" increment:1];
     }
-    CVPixelBufferRef pixelBuffer = nil;
-    CVPixelBufferCreate(kCFAllocatorDefault,
-                        displayWidth,
-                        displayHeight,
-                        kCVPixelFormatType_32BGRA,
-                        (__bridge CFDictionaryRef)@{(id)kCVPixelBufferIOSurfacePropertiesKey: @{}},
-                        &pixelBuffer);
-    if (!pixelBuffer) {
-        if (inOutError) {
-            *inOutError = MTIErrorCreate(MTIErrorFailedToCreateCVPixelBuffer, nil);
-        }
-        return nil;
-    }
-    
-    @MTI_DEFER {
-        CVPixelBufferRelease(pixelBuffer);
-    };
-    
-    CGColorSpaceRef colorSpace = nil;
-    if (CGColorSpaceGetModel(specifiedColorSpace) == kCGColorSpaceModelRGB) {
-        colorSpace = CGColorSpaceRetain(specifiedColorSpace);
-    } else {
-        colorSpace = CGColorSpaceCreateDeviceRGB();
-    }
-    
-    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-    CGContextRef cgContext = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pixelBuffer),
-                                                   displayWidth,
-                                                   displayHeight,
-                                                   8,
-                                                   CVPixelBufferGetBytesPerRow(pixelBuffer),
-                                                   colorSpace,
-                                                   kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-    CGColorSpaceRelease(colorSpace);
-    if (!cgContext) {
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-        if (inOutError) {
-            *inOutError = MTIErrorCreate(MTIErrorTextureLoaderFailedToCreateCGContext, nil);
-        }
-        return nil;
-    }
-    
-    CIImage *placeholder = [[CIImage imageWithColor:CIColor.blackColor] imageByCroppingToRect:CGRectMake(0, 0, pixelWidth, pixelHeight)];
-    if (_options.flipsVertically) {
-        CGContextConcatCTM(cgContext, CGAffineTransformMake(1, 0, 0, -1, 0, displayHeight));
-    }
-    CGContextConcatCTM(cgContext, [placeholder imageTransformForOrientation:_properties.orientation]);
-    CGContextDrawImage(cgContext, CGRectMake(0, 0, pixelWidth, pixelHeight), _image);
-    CGContextRelease(cgContext);
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-    
-    IOSurfaceRef iosurface = CVPixelBufferGetIOSurface(pixelBuffer);
-    if (!iosurface) {
-        NSAssert(NO, @"CVPixelBuffer is not backed by an IOSurface, please file a bug report.");
-        if (inOutError) {
-            *inOutError = MTIErrorCreate(MTIErrorFailedToCreateTexture, nil);
-        }
-        return nil;
-    }
-    
-    MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:CVPixelBufferGetWidth(pixelBuffer) height:CVPixelBufferGetHeight(pixelBuffer) mipmapped:NO];
-    textureDescriptor.usage = MTLTextureUsageShaderRead;
-    textureDescriptor.storageMode = _options.storageMode;
-    textureDescriptor.cpuCacheMode = _options.cpuCacheMode;
-    
-    id<MTLTexture> texture = [renderingContext.context.device newTextureWithDescriptor:textureDescriptor iosurface:CVPixelBufferGetIOSurface(pixelBuffer) plane:0];
     if (!texture) {
-        if (inOutError) {
-            *inOutError = MTIErrorCreate(MTIErrorFailedToCreateTexture, nil);
+        CVPixelBufferRef pixelBuffer = nil;
+        CVPixelBufferCreate(kCFAllocatorDefault,
+                            displayWidth,
+                            displayHeight,
+                            kCVPixelFormatType_32BGRA,
+                            (__bridge CFDictionaryRef)@{(id)kCVPixelBufferIOSurfacePropertiesKey: @{}},
+                            &pixelBuffer);
+        if (!pixelBuffer) {
+            if (inOutError) {
+                *inOutError = MTIErrorCreate(MTIErrorFailedToCreateCVPixelBuffer, nil);
+            }
+            return nil;
         }
-        return nil;
+
+        @MTI_DEFER {
+            CVPixelBufferRelease(pixelBuffer);
+        };
+
+        CGColorSpaceRef colorSpace = nil;
+        if (CGColorSpaceGetModel(specifiedColorSpace) == kCGColorSpaceModelRGB) {
+            colorSpace = CGColorSpaceRetain(specifiedColorSpace);
+        } else {
+            colorSpace = CGColorSpaceCreateDeviceRGB();
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+        CGContextRef cgContext = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pixelBuffer),
+                                                       displayWidth,
+                                                       displayHeight,
+                                                       8,
+                                                       CVPixelBufferGetBytesPerRow(pixelBuffer),
+                                                       colorSpace,
+                                                       kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+        CGColorSpaceRelease(colorSpace);
+        if (!cgContext) {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+            if (inOutError) {
+                *inOutError = MTIErrorCreate(MTIErrorTextureLoaderFailedToCreateCGContext, nil);
+            }
+            return nil;
+        }
+
+        CIImage *placeholder = [[CIImage imageWithColor:CIColor.blackColor] imageByCroppingToRect:CGRectMake(0, 0, pixelWidth, pixelHeight)];
+        if (_options.flipsVertically) {
+            CGContextConcatCTM(cgContext, CGAffineTransformMake(1, 0, 0, -1, 0, displayHeight));
+        }
+        CGContextConcatCTM(cgContext, [placeholder imageTransformForOrientation:_properties.orientation]);
+        CGContextDrawImage(cgContext, CGRectMake(0, 0, pixelWidth, pixelHeight), _image);
+        CGContextRelease(cgContext);
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+
+        IOSurfaceRef iosurface = CVPixelBufferGetIOSurface(pixelBuffer);
+        if (!iosurface) {
+            NSAssert(NO, @"CVPixelBuffer is not backed by an IOSurface, please file a bug report.");
+            if (inOutError) {
+                *inOutError = MTIErrorCreate(MTIErrorFailedToCreateTexture, nil);
+            }
+            return nil;
+        }
+
+        MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:CVPixelBufferGetWidth(pixelBuffer) height:CVPixelBufferGetHeight(pixelBuffer) mipmapped:NO];
+        textureDescriptor.usage = MTLTextureUsageShaderRead;
+        textureDescriptor.storageMode = _options.storageMode;
+        textureDescriptor.cpuCacheMode = _options.cpuCacheMode;
+        reusableTextureDescriptor = textureDescriptor.newMTITextureDescriptor;
+
+        texture = [renderingContext.context.device newTextureWithDescriptor:textureDescriptor iosurface:CVPixelBufferGetIOSurface(pixelBuffer) plane:0];
+        if (!texture) {
+            if (inOutError) {
+                *inOutError = MTIErrorCreate(MTIErrorFailedToCreateTexture, nil);
+            }
+            return nil;
+        }
+    }
+    
+    if (!textureFromCache) {
+        [renderingContext.context setSourceTexture:texture forKey:cacheKey cost:MTISourceTextureCacheCost(texture)];
     }
     
     #if TARGET_OS_IPHONE && !TARGET_OS_MACCATALYST && !TARGET_OS_TV
     //Workaround for #64. See https://github.com/MetalPetal/MetalPetal/issues/64
     if (![renderingContext.context.device supportsFeatureSet:MTLFeatureSet_iOS_GPUFamily2_v1]) {
+        if (!reusableTextureDescriptor) {
+            MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:texture.pixelFormat width:texture.width height:texture.height mipmapped:NO];
+            textureDescriptor.usage = MTLTextureUsageShaderRead;
+            textureDescriptor.storageMode = _options.storageMode;
+            textureDescriptor.cpuCacheMode = _options.cpuCacheMode;
+            reusableTextureDescriptor = textureDescriptor.newMTITextureDescriptor;
+        }
         NSError *error;
-        MTIImagePromiseRenderTarget *renderTarget = [renderingContext.context newRenderTargetWithReusableTextureDescriptor:textureDescriptor.newMTITextureDescriptor error:&error];
+        MTIImagePromiseRenderTarget *renderTarget = [renderingContext.context newRenderTargetWithReusableTextureDescriptor:reusableTextureDescriptor error:&error];
         if (error) {
             if (inOutError) {
                 *inOutError = error;
@@ -373,10 +425,8 @@
     }
     #endif
     
-    if (@available(iOS 12.0, macOS 10.14, *)) {
-        id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
-        [blitCommandEncoder optimizeContentsForGPUAccess:texture];
-        [blitCommandEncoder endEncoding];
+    if (!textureFromCache && !textureOptimized) {
+        MTIOptimizeTextureContentsForGPUAccess(renderingContext, texture);
     }
     
     return [renderingContext.context newRenderTargetWithTexture:texture];

@@ -23,6 +23,11 @@ typedef NS_ERROR_ENUM(MTIImageViewErrorDomain, MTIImageViewError) {
     MTIImageViewErrorSameImage = 1002
 };
 
+typedef NS_ENUM(NSInteger, MTIThreadSafeImageViewRenderSchedulingMode) {
+    MTIThreadSafeImageViewRenderSchedulingModeImmediate = 0,
+    MTIThreadSafeImageViewRenderSchedulingModeCoalesced = 1
+};
+
 @class MTIImage,MTIContext;
 
 /// An image view that immediately draws its `image` on the calling thread. Most of the custom properties can be accessed from any thread safely. It's recommanded to use the `MTIImageView` which draws it's content on the main thread instead of this view.
@@ -40,6 +45,9 @@ __attribute__((objc_subclassing_restricted))
 @property (atomic, nullable) CGColorSpaceRef colorSpace;
 
 @property (atomic) MTIDrawableRenderingResizingMode resizingMode;
+
+/// Controls whether property updates render immediately on the calling thread or coalesce onto an internal serial queue.
+@property (atomic) MTIThreadSafeImageViewRenderSchedulingMode renderSchedulingMode;
 
 @property (atomic, strong, nullable) MTIContext *context;
 

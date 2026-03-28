@@ -9,7 +9,7 @@
 #import "MTIWeakToStrongObjectsMapTable.h"
 #import <objc/runtime.h>
 
-NSUInteger const MTIWeakToStrongObjectsMapTableCompactThreshold = 1024 * 64; //1024 x 64 x 8 (byte size of a pointer) = 512K
+NSUInteger const MTIWeakToStrongObjectsMapTableCompactThreshold = 1024 * 4; // Lower the dead-entry watermark for high-churn image/promise workloads.
 
 @interface MTIWeakToStrongObjectsMapTable ()
 

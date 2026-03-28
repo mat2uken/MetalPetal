@@ -14,6 +14,7 @@
 #import "MTIPrint.h"
 #import "MTIError.h"
 #import "MTIRenderTask.h"
+#import "MTIImageRenderingContext.h"
 
 NSString * const MTIImageViewErrorDomain = @"MTIImageViewErrorDomain";
 
@@ -95,6 +96,14 @@ __attribute__((objc_subclassing_restricted))
 
 @property (nonatomic, strong) NSError *contextCreationError;
 
+@property (nonatomic) BOOL needsRender;
+
+@property (nonatomic) BOOL renderDispatchScheduled;
+
+@property (nonatomic, readonly) dispatch_queue_t renderQueue;
+
+@property (nonatomic, readonly) NSMutableArray *pendingRenderCompletions;
+
 @end
 
 @implementation MTIThreadSafeImageView
@@ -102,6 +111,7 @@ __attribute__((objc_subclassing_restricted))
 @synthesize image = _image;
 @synthesize clearColor = _clearColor;
 @synthesize resizingMode = _resizingMode;
+@synthesize renderSchedulingMode = _renderSchedulingMode;
 
 + (Class)layerClass {
 #if TARGET_OS_SIMULATOR
@@ -136,6 +146,9 @@ __attribute__((objc_subclassing_restricted))
     _renderLayer.device = nil;
     _currentDrawableSize = _renderLayer.drawableSize;
     _lock = MTILockCreate();
+    _renderQueue = dispatch_queue_create("com.metalpetal.thread-safe-image-view.render", DISPATCH_QUEUE_SERIAL);
+    _pendingRenderCompletions = [NSMutableArray array];
+    _renderSchedulingMode = MTIThreadSafeImageViewRenderSchedulingModeImmediate;
     self.opaque = YES;
 }
 
@@ -146,7 +159,7 @@ __attribute__((objc_subclassing_restricted))
     [super setOpaque:opaque];
     _renderLayer.opaque = opaque;
     if (oldOpaque != opaque) {
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
     }
     [_lock unlock];
 }
@@ -166,6 +179,7 @@ __attribute__((objc_subclassing_restricted))
     [_lock lock];
     _context = context;
     _renderLayer.device = context.device;
+    [self requestRenderLockedWithCompletion:nil];
     [_lock unlock];
 }
 
@@ -193,7 +207,7 @@ __attribute__((objc_subclassing_restricted))
     [_lock lock];
     if (_renderLayer.pixelFormat != colorPixelFormat) {
         _renderLayer.pixelFormat = colorPixelFormat;
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
     }
     [_lock unlock];
 }
@@ -209,7 +223,7 @@ __attribute__((objc_subclassing_restricted))
     [_lock lock];
     if (_renderLayer.colorspace != colorSpace) {
         _renderLayer.colorspace = colorSpace;
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
     }
     [_lock unlock];
 }
@@ -229,7 +243,7 @@ __attribute__((objc_subclassing_restricted))
         _clearColor.alpha != clearColor.alpha
         ) {
         _clearColor = clearColor;
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
     }
     [_lock unlock];
 }
@@ -246,21 +260,18 @@ __attribute__((objc_subclassing_restricted))
 }
 
 - (void)setImage:(MTIImage *)image renderCompletion:(void (^)(NSError *))renderCompletion {
-    BOOL renderImage = NO;
-    
     [_lock lock];
     if (_image != image) {
         _image = image;
-        renderImage = YES;
-        [self renderImage:image completion:renderCompletion];
-    }
-    [_lock unlock];
-    
-    if (!renderImage) {
+        [self requestRenderLockedWithCompletion:renderCompletion];
+    } else {
+        [_lock unlock];
         if (renderCompletion) {
             renderCompletion([NSError errorWithDomain:MTIImageViewErrorDomain code:MTIImageViewErrorSameImage userInfo:nil]);
         }
+        return;
     }
+    [_lock unlock];
 }
 
 - (MTIImage *)image {
@@ -274,7 +285,19 @@ __attribute__((objc_subclassing_restricted))
     [_lock lock];
     if (_resizingMode != resizingMode) {
         _resizingMode = resizingMode;
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
+    }
+    [_lock unlock];
+}
+
+- (void)setRenderSchedulingMode:(MTIThreadSafeImageViewRenderSchedulingMode)renderSchedulingMode {
+    [_lock lock];
+    if (_renderSchedulingMode != renderSchedulingMode) {
+        _renderSchedulingMode = renderSchedulingMode;
+        if (renderSchedulingMode == MTIThreadSafeImageViewRenderSchedulingModeImmediate &&
+            (_needsRender || _pendingRenderCompletions.count > 0)) {
+            [self requestRenderLockedWithCompletion:nil];
+        }
     }
     [_lock unlock];
 }
@@ -292,12 +315,77 @@ __attribute__((objc_subclassing_restricted))
     [_lock lock];
     if (!CGRectEqualToRect(_backgroundAccessingBounds, self.bounds)) {
         _backgroundAccessingBounds = self.bounds;
-        [self renderImage:_image completion:nil];
+        [self requestRenderLockedWithCompletion:nil];
     }
     [_lock unlock];
 }
 
 // locking access
+
+- (void)requestRenderLockedWithCompletion:(void (^)(NSError *))completion {
+    NSAssert([_lock tryLock] == NO, @"");
+    
+    if (_renderSchedulingMode == MTIThreadSafeImageViewRenderSchedulingModeImmediate) {
+        NSArray *pendingCompletions = [_pendingRenderCompletions copy];
+        [_pendingRenderCompletions removeAllObjects];
+        _needsRender = NO;
+        void (^wrappedCompletion)(NSError *) = completion;
+        if (pendingCompletions.count > 0) {
+            void (^currentCompletion)(NSError *) = [completion copy];
+            wrappedCompletion = ^(NSError *error) {
+                for (void (^pendingCompletion)(NSError *) in pendingCompletions) {
+                    pendingCompletion(error);
+                }
+                if (currentCompletion) {
+                    currentCompletion(error);
+                }
+            };
+        }
+        [self renderImage:_image completion:wrappedCompletion];
+        return;
+    }
+    
+    if (completion) {
+        [_pendingRenderCompletions addObject:[completion copy]];
+    }
+    _needsRender = YES;
+    if (_renderDispatchScheduled) {
+        return;
+    }
+    
+    _renderDispatchScheduled = YES;
+    dispatch_async(_renderQueue, ^{
+        [self performScheduledRenderPass];
+    });
+}
+
+- (void)performScheduledRenderPass {
+    [_lock lock];
+    _renderDispatchScheduled = NO;
+    
+    if (!_needsRender) {
+        [_lock unlock];
+        return;
+    }
+    
+    _needsRender = NO;
+    MTIImage *image = _image;
+    NSArray *completions = [_pendingRenderCompletions copy];
+    [_pendingRenderCompletions removeAllObjects];
+    [self renderImage:image completion:^(NSError *error) {
+        for (void (^completion)(NSError *) in completions) {
+            completion(error);
+        }
+    }];
+    
+    if (_needsRender && !_renderDispatchScheduled) {
+        _renderDispatchScheduled = YES;
+        dispatch_async(_renderQueue, ^{
+            [self performScheduledRenderPass];
+        });
+    }
+    [_lock unlock];
+}
 
 - (void)renderImage:(MTIImage *)image completion:(void (^)(NSError *))completion {
     NSAssert([_lock tryLock] == NO, @"");
@@ -315,6 +403,12 @@ __attribute__((objc_subclassing_restricted))
     [self updateContentScaleFactor];
     
     MTIImage *imageToRender = image;
+    if (imageToRender.cachePolicy == MTIImageCachePolicyPersistent) {
+        MTIImage *bufferedImage = [context renderedBufferForImage:imageToRender];
+        if (bufferedImage) {
+            imageToRender = bufferedImage;
+        }
+    }
     MTIDrawableRenderingResizingMode resizingMode = self -> _resizingMode;
     //and acquire _clearColor
     
@@ -324,7 +418,7 @@ __attribute__((objc_subclassing_restricted))
 
     if (imageToRender) {
         NSError *error;
-        [context startTaskToRenderImage:image
+        [context startTaskToRenderImage:imageToRender
                   toDrawableWithRequest:request
                                   error:&error
                              completion:^(MTIRenderTask * _Nonnull task) {

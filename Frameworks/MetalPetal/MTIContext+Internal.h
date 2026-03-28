@@ -80,6 +80,12 @@ typedef NSString * MTIContextImageAssociatedValueTableName NS_EXTENSIBLE_STRING_
 
 - (nullable MTIImagePromiseRenderTarget *)renderTargetForPromise:(id<MTIImagePromise>)promise;
 
+/* Long-lived immutable source textures keyed by source identity. */
+
+- (nullable id<MTLTexture>)sourceTextureForKey:(id<NSCopying>)key;
+
+- (void)setSourceTexture:(id<MTLTexture>)texture forKey:(id<NSCopying>)key cost:(NSUInteger)cost;
+
 #pragma mark - Performance Statistics
 
 - (void)recordPerformanceCounter:(NSString *)name increment:(NSUInteger)increment;
