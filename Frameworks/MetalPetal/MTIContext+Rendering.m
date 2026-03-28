@@ -52,12 +52,26 @@
 
 static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImageAssociationKey;
 
+static MTIRenderTask * MTICommitCommandBufferAndCreateTask(id<MTLCommandBuffer> commandBuffer,
+                                                           void (^completion)(MTIRenderTask * _Nullable),
+                                                           id<MTIImagePromiseResolution> _Nullable resolution,
+                                                           id consumer) {
+    MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:commandBuffer];
+    if (completion) {
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            completion(task);
+        }];
+    }
+    if (resolution) {
+        [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> cb) {
+            [resolution markAsConsumedBy:consumer];
+        }];
+    }
+    [commandBuffer commit];
+    return task;
+}
+
 - (CIImage *)createCIImageFromImage:(MTIImage *)image options:(MTICIImageCreationOptions *)options error:(NSError * __autoreleasing *)inOutError {
-    [self lockForRendering];
-    @MTI_DEFER {
-        [self unlockForRendering];
-    };
-    
     NSParameterAssert(image.alphaType != MTIAlphaTypeUnknown);
     
     MTIImageRenderingContext *renderingContext = [[MTIImageRenderingContext alloc] initWithContext:self];
@@ -144,17 +158,15 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
 }
 
 - (nullable MTIRenderTask *)startTaskToRenderImage:(MTIImage *)image toCVPixelBuffer:(CVPixelBufferRef)pixelBuffer sRGB:(BOOL)sRGB destinationAlphaType:(MTIAlphaType)destinationAlphaType error:(NSError * __autoreleasing *)inOutError completion:(nullable void (^)(MTIRenderTask *task))completion {
-    [self lockForRendering];
-    @MTI_DEFER {
-        [self unlockForRendering];
-    };
-    
     MTIImageRenderingContext *renderingContext = [[MTIImageRenderingContext alloc] initWithContext:self];
     
     NSError *error = nil;
     id<MTIImagePromiseResolution> resolution = [renderingContext resolutionForImage:image error:&error];
+    __block BOOL consumeResolutionOnReturn = (resolution != nil);
     @MTI_DEFER {
-        [resolution markAsConsumedBy:self];
+        if (consumeResolutionOnReturn) {
+            [resolution markAsConsumedBy:self];
+        }
     };
     if (error) {
         if (inOutError) {
@@ -262,14 +274,8 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
                           destinationOrigin:MTLOriginMake(0, 0, 0)];
         [blitCommandEncoder endEncoding];
         
-        MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-        if (completion) {
-            [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                completion(task);
-            }];
-        }
-        [renderingContext.commandBuffer commit];
-        [renderingContext.commandBuffer waitUntilScheduled];
+        MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+        consumeResolutionOnReturn = NO;
         return task;
     } else {
         //Render
@@ -320,14 +326,8 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
 
         [commandEncoder endEncoding];
         
-        MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-        if (completion) {
-            [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                completion(task);
-            }];
-        }
-        [renderingContext.commandBuffer commit];
-        [renderingContext.commandBuffer waitUntilScheduled];
+        MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+        consumeResolutionOnReturn = NO;
         return task;
     }
 }
@@ -402,19 +402,17 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
 }
 
 - (MTIRenderTask *)startTaskToRenderImage:(MTIImage *)image toDrawableWithRequest:(MTIDrawableRenderingRequest *)request error:(NSError * __autoreleasing *)inOutError completion:(void (^)(MTIRenderTask *))completion {
-    [self lockForRendering];
-    @MTI_DEFER {
-        [self unlockForRendering];
-    };
-    
     id<MTIDrawableProvider> drawableProvider = request.drawableProvider;
     
     MTIImageRenderingContext *renderingContext = [[MTIImageRenderingContext alloc] initWithContext:self];
     
     NSError *error = nil;
     id<MTIImagePromiseResolution> resolution = [renderingContext resolutionForImage:image error:&error];
+    __block BOOL consumeResolutionOnReturn = (resolution != nil);
     @MTI_DEFER {
-        [resolution markAsConsumedBy:self];
+        if (consumeResolutionOnReturn) {
+            [resolution markAsConsumedBy:self];
+        }
     };
     if (error) {
         if (inOutError) {
@@ -507,15 +505,8 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
     id<MTLDrawable> drawable = [drawableProvider drawableForRequest:request];
     [renderingContext.commandBuffer presentDrawable:drawable];
     
-    MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-    if (completion) {
-        [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-            completion(task);
-        }];
-    }
-    [renderingContext.commandBuffer commit];
-    [renderingContext.commandBuffer waitUntilScheduled];
-    
+    MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+    consumeResolutionOnReturn = NO;
     return task;
 }
 
@@ -529,17 +520,15 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
         return nil;
     }
     
-    [self lockForRendering];
-    @MTI_DEFER {
-        [self unlockForRendering];
-    };
-    
     MTIImageRenderingContext *renderingContext = [[MTIImageRenderingContext alloc] initWithContext:self];
     
     NSError *error = nil;
     id<MTIImagePromiseResolution> resolution = [renderingContext resolutionForImage:image error:&error];
+    __block BOOL consumeResolutionOnReturn = (resolution != nil);
     @MTI_DEFER {
-        [resolution markAsConsumedBy:self];
+        if (consumeResolutionOnReturn) {
+            [resolution markAsConsumedBy:self];
+        }
     };
     if (error) {
         if (inOutError) {
@@ -567,14 +556,8 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
                           destinationOrigin:MTLOriginMake(0, 0, 0)];
         [blitCommandEncoder endEncoding];
         
-        MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-        if (completion) {
-            [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                completion(task);
-            }];
-        }
-        [renderingContext.commandBuffer commit];
-        [renderingContext.commandBuffer waitUntilScheduled];
+        MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+        consumeResolutionOnReturn = NO;
         return task;
     } else {
         //Render
@@ -625,30 +608,22 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
         
         [commandEncoder endEncoding];
         
-        MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-        if (completion) {
-            [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                completion(task);
-            }];
-        }
-        [renderingContext.commandBuffer commit];
-        [renderingContext.commandBuffer waitUntilScheduled];
+        MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+        consumeResolutionOnReturn = NO;
         return task;
     }
 }
 
 - (MTIRenderTask *)startTaskToRenderImage:(MTIImage *)image error:(NSError * __autoreleasing *)inOutError completion:(void (^)(MTIRenderTask * _Nonnull))completion {
-    [self lockForRendering];
-    @MTI_DEFER {
-        [self unlockForRendering];
-    };
-    
     MTIImageRenderingContext *renderingContext = [[MTIImageRenderingContext alloc] initWithContext:self];
     
     NSError *error = nil;
     id<MTIImagePromiseResolution> resolution = [renderingContext resolutionForImage:image error:&error];
+    __block BOOL consumeResolutionOnReturn = (resolution != nil);
     @MTI_DEFER {
-        [resolution markAsConsumedBy:self];
+        if (consumeResolutionOnReturn) {
+            [resolution markAsConsumedBy:self];
+        }
     };
     if (error) {
         if (inOutError) {
@@ -657,14 +632,8 @@ static const void * const MTICIImageMTIImageAssociationKey = &MTICIImageMTIImage
         return nil;
     }
     
-    MTIRenderTask *task = [[MTIRenderTask alloc] initWithCommandBuffer:renderingContext.commandBuffer];
-    if (completion) {
-        [renderingContext.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-            completion(task);
-        }];
-    }
-    [renderingContext.commandBuffer commit];
-    [renderingContext.commandBuffer waitUntilScheduled];
+    MTIRenderTask *task = MTICommitCommandBufferAndCreateTask(renderingContext.commandBuffer, completion, resolution, self);
+    consumeResolutionOnReturn = NO;
     return task;
 }
 

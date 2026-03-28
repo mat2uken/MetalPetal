@@ -11,6 +11,8 @@
 #import "MTIPrint.h"
 #import "MTILock.h"
 #import "MTIError.h"
+#import "MTIDefer.h"
+#import "MTIContext+Internal.h"
 
 #include <vector>
 
@@ -176,6 +178,8 @@ __attribute__((objc_subclassing_restricted))
 
 @property (nonatomic, strong) NSMutableDictionary<MTITextureDescriptor *, MTIStack<id<MTLTexture>> *> *textureCache;
 
+@property (nonatomic, weak) MTIContext *ownerContext;
+
 @end
 
 @implementation MTIDeviceTexturePool
@@ -190,6 +194,10 @@ __attribute__((objc_subclassing_restricted))
 }
 
 - (MTIReusableTexture *)newTextureWithDescriptor:(MTITextureDescriptor *)textureDescriptor error:(NSError * __autoreleasing *)error {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [self.ownerContext recordPerformanceDuration:@"texturepool.device.acquire.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     [_lock lock];
 
     __auto_type availableTextures = _textureCache[textureDescriptor];
@@ -203,6 +211,7 @@ __attribute__((objc_subclassing_restricted))
     [_lock unlock];
     
     if (!texture) {
+        [self.ownerContext recordPerformanceCounter:@"texturepool.device.reuse.miss" increment:1];
         texture = [textureDescriptor newTextureWithDevice:_device];
         if (!texture) {
             if (error) {
@@ -211,6 +220,8 @@ __attribute__((objc_subclassing_restricted))
             return nil;
         }
         MTIPrint(@"%@: new texture - %@x%@x%@/%@", self, @(textureDescriptor.width), @(textureDescriptor.height), @(textureDescriptor.depth),@(textureDescriptor.pixelFormat));
+    } else {
+        [self.ownerContext recordPerformanceCounter:@"texturepool.device.reuse.hit" increment:1];
     }
     
     MTIReusableTexture *reusableTexture = [[MTIReusableTexture alloc] initWithTexture:texture descriptor:textureDescriptor pool:self];
@@ -228,6 +239,7 @@ __attribute__((objc_subclassing_restricted))
     [availableTextures pushObject:texture];
     
     [_lock unlock];
+    [self.ownerContext recordPerformanceCounter:@"texturepool.device.return.count" increment:1];
 }
 
 - (void)flush {
@@ -318,6 +330,8 @@ NS_AVAILABLE(10_15, 13_0)
 
 @property (nonatomic, strong) NSMutableDictionary<MTIHeapTextureReuseKey *, MTIStack<id<MTLHeap>> *> *heaps;
 
+@property (nonatomic, weak) MTIContext *ownerContext;
+
 @end
 
 @implementation MTIHeapTexturePool
@@ -333,6 +347,10 @@ NS_AVAILABLE(10_15, 13_0)
 }
 
 - (MTIReusableTexture *)newTextureWithDescriptor:(MTITextureDescriptor *)textureDescriptor error:(NSError * __autoreleasing *)error {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [self.ownerContext recordPerformanceDuration:@"texturepool.heap.acquire.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     [_lock lock];
     
     NSUInteger size = [textureDescriptor heapTextureSizeAndAlignWithDevice:_device].size;
@@ -348,6 +366,7 @@ NS_AVAILABLE(10_15, 13_0)
     [_lock unlock];
     
     if (!heap) {
+        [self.ownerContext recordPerformanceCounter:@"texturepool.heap.reuse.miss" increment:1];
         MTLHeapDescriptor *heapDescriptor = [[MTLHeapDescriptor alloc] init];
         heapDescriptor.size = key.size;
         heapDescriptor.resourceOptions = key.resourceOptions;
@@ -362,6 +381,8 @@ NS_AVAILABLE(10_15, 13_0)
             return nil;
         }
         MTIPrint(@"%@: new texture - %@x%@x%@/%@", self, @(textureDescriptor.width), @(textureDescriptor.height), @(textureDescriptor.depth),@(textureDescriptor.pixelFormat));
+    } else {
+        [self.ownerContext recordPerformanceCounter:@"texturepool.heap.reuse.hit" increment:1];
     }
     
     id<MTLTexture> texture = [textureDescriptor newTextureWithHeap:heap];
@@ -392,6 +413,7 @@ NS_AVAILABLE(10_15, 13_0)
     [availableHeaps pushObject:texture.heap];
     
     [_lock unlock];
+    [self.ownerContext recordPerformanceCounter:@"texturepool.heap.return.count" increment:1];
 }
 
 - (void)flush {

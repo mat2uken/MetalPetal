@@ -80,6 +80,12 @@ typedef NSString * MTIContextImageAssociatedValueTableName NS_EXTENSIBLE_STRING_
 
 - (nullable MTIImagePromiseRenderTarget *)renderTargetForPromise:(id<MTIImagePromise>)promise;
 
+#pragma mark - Performance Statistics
+
+- (void)recordPerformanceCounter:(NSString *)name increment:(NSUInteger)increment;
+
+- (void)recordPerformanceDuration:(NSString *)name duration:(CFTimeInterval)duration;
+
 @end
 
 NS_ASSUME_NONNULL_END

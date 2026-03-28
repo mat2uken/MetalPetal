@@ -22,6 +22,7 @@
 #import "MTILock.h"
 #import "MTIPixelFormat.h"
 #import "MTILibrarySource.h"
+#import "MTIPerformanceStatistics.h"
 #import "MTITexturePool.h"
 #import "MTITextureLoader.h"
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
@@ -32,6 +33,65 @@
 #endif
 
 NSString * const MTIContextDefaultLabel = @"MetalPetal";
+
+__attribute__((objc_subclassing_restricted))
+@interface MTIPerformanceStatisticsRecorder : NSObject
+
+@property (nonatomic, strong, readonly) id<MTILocking> lock;
+@property (nonatomic, strong, readonly) NSMutableDictionary<NSString *, NSNumber *> *counters;
+@property (nonatomic, strong, readonly) NSMutableDictionary<NSString *, NSNumber *> *durations;
+
+- (void)recordCounter:(NSString *)name increment:(NSUInteger)increment;
+
+- (void)recordDuration:(NSString *)name duration:(CFTimeInterval)duration;
+
+- (void)reset;
+
+- (MTIPerformanceStatisticsSnapshot *)snapshot;
+
+@end
+
+@implementation MTIPerformanceStatisticsRecorder
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _lock = MTILockCreate();
+        _counters = [NSMutableDictionary dictionary];
+        _durations = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
+
+- (void)recordCounter:(NSString *)name increment:(NSUInteger)increment {
+    [_lock lock];
+    NSNumber *value = _counters[name] ?: @0;
+    _counters[name] = @(value.unsignedIntegerValue + increment);
+    [_lock unlock];
+}
+
+- (void)recordDuration:(NSString *)name duration:(CFTimeInterval)duration {
+    [_lock lock];
+    NSNumber *value = _durations[name] ?: @0;
+    _durations[name] = @(value.doubleValue + duration);
+    [_lock unlock];
+}
+
+- (void)reset {
+    [_lock lock];
+    [_counters removeAllObjects];
+    [_durations removeAllObjects];
+    [_lock unlock];
+}
+
+- (MTIPerformanceStatisticsSnapshot *)snapshot {
+    [_lock lock];
+    NSDictionary<NSString *, NSNumber *> *counters = [_counters copy];
+    NSDictionary<NSString *, NSNumber *> *durations = [_durations copy];
+    [_lock unlock];
+    return [[MTIPerformanceStatisticsSnapshot alloc] initWithCounters:counters durations:durations];
+}
+
+@end
 
 @implementation MTIContextOptions
 
@@ -82,6 +142,7 @@ static NSBundle * MTIDefaultBuiltinLibraryBundle(void) {
         _textureLoaderClass = nil;
         _coreVideoMetalTextureBridgeClass = nil;
         _texturePoolClass = nil;
+        _enablesPerformanceStatistics = NO;
     }
     return self;
 }
@@ -99,6 +160,7 @@ static NSBundle * MTIDefaultBuiltinLibraryBundle(void) {
     options.textureLoaderClass = _textureLoaderClass;
     options.coreVideoMetalTextureBridgeClass = _coreVideoMetalTextureBridgeClass;
     options.texturePoolClass = _texturePoolClass;
+    options.enablesPerformanceStatistics = _enablesPerformanceStatistics;
     return options;
 }
 
@@ -157,17 +219,24 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
 @interface MTIContext()
 
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSURL *, id<MTLLibrary>> *libraryCache;
+@property (nonatomic, strong, readonly) id<MTILocking> libraryCacheLock;
 
 @property (nonatomic, strong, readonly) NSMutableDictionary<MTIFunctionDescriptor *, id<MTLFunction>> *functionCache;
+@property (nonatomic, strong, readonly) id<MTILocking> functionCacheLock;
 
 @property (nonatomic, strong, readonly) NSMutableDictionary<MTLRenderPipelineDescriptor *, MTIRenderPipeline *> *renderPipelineCache;
+@property (nonatomic, strong, readonly) id<MTILocking> renderPipelineCacheLock;
 @property (nonatomic, strong, readonly) NSMutableDictionary<MTLComputePipelineDescriptor *, MTIComputePipeline *> *computePipelineCache;
+@property (nonatomic, strong, readonly) id<MTILocking> computePipelineCacheLock;
 
 @property (nonatomic, strong, readonly) NSMutableDictionary<MTISamplerDescriptor *, id<MTLSamplerState>> *samplerStateCache;
+@property (nonatomic, strong, readonly) id<MTILocking> samplerStateCacheLock;
 
 @property (nonatomic, strong, readonly) id<MTITexturePool> texturePool;
 
 @property (nonatomic, strong, readonly) NSMapTable<id<MTIKernel>, id> *kernelStateMap;
+@property (nonatomic, strong, readonly) id<MTILocking> kernelStateMapLock;
+@property (nonatomic, strong, readonly, nullable) MTIPerformanceStatisticsRecorder *performanceStatisticsRecorder;
 
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSString *, MTIWeakToStrongObjectsMapTable *> *promiseKeyValueTables;
 @property (nonatomic, strong, readonly) id<MTILocking> promiseKeyValueTablesLock;
@@ -275,13 +344,23 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
             }
         }
         _texturePool = [texturePoolClass newTexturePoolWithDevice:device];
+        if ([_texturePool respondsToSelector:NSSelectorFromString(@"setOwnerContext:")]) {
+            [(NSObject *)_texturePool setValue:self forKey:@"ownerContext"];
+        }
         _libraryCache = [NSMutableDictionary dictionary];
+        _libraryCacheLock = MTILockCreate();
         _libraryCache[options.defaultLibraryURL] = defaultLibrary;
         _functionCache = [NSMutableDictionary dictionary];
+        _functionCacheLock = MTILockCreate();
         _renderPipelineCache = [NSMutableDictionary dictionary];
+        _renderPipelineCacheLock = MTILockCreate();
         _computePipelineCache = [NSMutableDictionary dictionary];
+        _computePipelineCacheLock = MTILockCreate();
         _samplerStateCache = [NSMutableDictionary dictionary];
+        _samplerStateCacheLock = MTILockCreate();
         _kernelStateMap = [[NSMapTable alloc] initWithKeyOptions:NSMapTableWeakMemory|NSMapTableObjectPointerPersonality valueOptions:NSMapTableStrongMemory capacity:0];
+        _kernelStateMapLock = MTILockCreate();
+        _performanceStatisticsRecorder = options.enablesPerformanceStatistics ? [[MTIPerformanceStatisticsRecorder alloc] init] : nil;
 
         _promiseKeyValueTables = [NSMutableDictionary dictionary];
         _promiseKeyValueTablesLock = MTILockCreate();
@@ -467,7 +546,14 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
 #pragma mark - Lock
 
 - (void)lockForRendering {
-    [_renderingLock lock];
+    if (_performanceStatisticsRecorder) {
+        CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+        [_renderingLock lock];
+        [_performanceStatisticsRecorder recordCounter:@"lock.rendering.wait.count" increment:1];
+        [_performanceStatisticsRecorder recordDuration:@"lock.rendering.wait.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    } else {
+        [_renderingLock lock];
+    }
 }
 
 - (void)unlockForRendering {
@@ -476,143 +562,207 @@ static void MTIContextEnumerateAllInstances(void (^enumerator)(MTIContext *conte
 
 #pragma mark - Cache
 
-static NSString * const MTIContextRenderingLockNotLockedErrorDescription = @"Context is performing a render-releated operation without aquiring the renderingLock.";
-
 - (id<MTLLibrary>)libraryWithURL:(NSURL *)URL error:(NSError * __autoreleasing *)error {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_libraryCacheLock lock];
     id<MTLLibrary> library = self.libraryCache[URL];
-    if (!library) {
-        if ([URL.scheme isEqualToString:MTIURLSchemeForLibraryWithSource]) {
-            library = [MTILibrarySourceRegistration.sharedRegistration newLibraryWithURL:URL device:self.device error:error];
-        } else {
-            library = [self.device newLibraryWithFile:URL.path error:error];
-        }
-        if (library) {
-            self.libraryCache[URL] = library;
-        }
+    [_libraryCacheLock unlock];
+    if (library) {
+        [self recordPerformanceCounter:@"cache.library.hit" increment:1];
+        return library;
     }
+    [self recordPerformanceCounter:@"cache.library.miss" increment:1];
+    if ([URL.scheme isEqualToString:MTIURLSchemeForLibraryWithSource]) {
+        library = [MTILibrarySourceRegistration.sharedRegistration newLibraryWithURL:URL device:self.device error:error];
+    } else {
+        library = [self.device newLibraryWithFile:URL.path error:error];
+    }
+    if (!library) {
+        return nil;
+    }
+    [_libraryCacheLock lock];
+    id<MTLLibrary> cachedLibrary = self.libraryCache[URL];
+    if (cachedLibrary) {
+        library = cachedLibrary;
+    } else {
+        self.libraryCache[URL] = library;
+    }
+    [_libraryCacheLock unlock];
     return library;
 }
 
 - (id<MTLFunction>)functionWithDescriptor:(MTIFunctionDescriptor *)descriptor error:(NSError * __autoreleasing *)inOutError {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_functionCacheLock lock];
     id<MTLFunction> cachedFunction = self.functionCache[descriptor];
-    if (!cachedFunction) {
-        NSError *error = nil;
-        id<MTLLibrary> library = self.defaultLibrary;
-        if (descriptor.libraryURL) {
-            library = [self libraryWithURL:descriptor.libraryURL error:&error];
+    [_functionCacheLock unlock];
+    if (cachedFunction) {
+        [self recordPerformanceCounter:@"cache.function.hit" increment:1];
+        return cachedFunction;
+    }
+    [self recordPerformanceCounter:@"cache.function.miss" increment:1];
+    NSError *error = nil;
+    id<MTLLibrary> library = self.defaultLibrary;
+    if (descriptor.libraryURL) {
+        library = [self libraryWithURL:descriptor.libraryURL error:&error];
+    }
+    if (error) {
+        if (inOutError) {
+            *inOutError = error;
         }
+        return nil;
+    }
+    
+    NSString *functionName = descriptor.name;
+    if (library == self.defaultLibrary) {
+        NSString *fullname = self.defaultLibraryFunctionShort2FullNames[descriptor.name];
+        functionName = fullname ?: functionName;
+    }
+    
+    if (descriptor.constantValues) {
+        cachedFunction = [library newFunctionWithName:functionName constantValues:descriptor.constantValues error:&error];
         if (error) {
             if (inOutError) {
                 *inOutError = error;
             }
             return nil;
         }
-        
-        NSString *functionName = descriptor.name;
-        if (library == self.defaultLibrary) {
-            NSString *fullname = self.defaultLibraryFunctionShort2FullNames[descriptor.name];
-            functionName = fullname ?: functionName;
+    } else {
+        cachedFunction = [library newFunctionWithName:functionName];
+    }
+    
+    if (!cachedFunction) {
+        if (inOutError) {
+            *inOutError = MTIErrorCreate(MTIErrorFunctionNotFound, @{@"MTIFunctionDescriptor": descriptor});
         }
-        
-        if (descriptor.constantValues) {
-            NSError *error = nil;
-            cachedFunction = [library newFunctionWithName:functionName constantValues:descriptor.constantValues error:&error];
-            if (error) {
-                if (inOutError) {
-                    *inOutError = error;
-                }
-                return nil;
-            }
-        } else {
-            cachedFunction = [library newFunctionWithName:functionName];
-        }
-        
-        if (!cachedFunction) {
-            if (inOutError) {
-                *inOutError = MTIErrorCreate(MTIErrorFunctionNotFound, @{@"MTIFunctionDescriptor": descriptor});
-            }
-            return nil;
-        }
+        return nil;
+    }
+    [_functionCacheLock lock];
+    id<MTLFunction> existingFunction = self.functionCache[descriptor];
+    if (existingFunction) {
+        cachedFunction = existingFunction;
+    } else {
         self.functionCache[descriptor] = cachedFunction;
     }
+    [_functionCacheLock unlock];
     return cachedFunction;
 }
 
 - (MTIRenderPipeline *)renderPipelineWithDescriptor:(MTLRenderPipelineDescriptor *)renderPipelineDescriptor error:(NSError * __autoreleasing *)inOutError {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_renderPipelineCacheLock lock];
     MTIRenderPipeline *renderPipeline = self.renderPipelineCache[renderPipelineDescriptor];
-    if (!renderPipeline) {
-        MTLRenderPipelineDescriptor *key = [renderPipelineDescriptor copy];
-        MTLRenderPipelineReflection *reflection; //get reflection
-        NSError *error = nil;
-        id<MTLRenderPipelineState> renderPipelineState = [self.device newRenderPipelineStateWithDescriptor:renderPipelineDescriptor options:MTLPipelineOptionArgumentInfo reflection:&reflection error:&error];
-        if (renderPipelineState && !error) {
-            renderPipeline = [[MTIRenderPipeline alloc] initWithState:renderPipelineState reflection:reflection];
-            self.renderPipelineCache[key] = renderPipeline;
-        } else {
-            if (inOutError) {
-                *inOutError = error;
-            }
-            return nil;
-        }
+    [_renderPipelineCacheLock unlock];
+    if (renderPipeline) {
+        [self recordPerformanceCounter:@"cache.renderPipeline.hit" increment:1];
+        return renderPipeline;
     }
+    [self recordPerformanceCounter:@"cache.renderPipeline.miss" increment:1];
+    MTLRenderPipelineReflection *reflection; //get reflection
+    NSError *error = nil;
+    id<MTLRenderPipelineState> renderPipelineState = [self.device newRenderPipelineStateWithDescriptor:renderPipelineDescriptor options:MTLPipelineOptionArgumentInfo reflection:&reflection error:&error];
+    if (!renderPipelineState || error) {
+        if (inOutError) {
+            *inOutError = error;
+        }
+        return nil;
+    }
+    renderPipeline = [[MTIRenderPipeline alloc] initWithState:renderPipelineState reflection:reflection];
+    MTLRenderPipelineDescriptor *key = [renderPipelineDescriptor copy];
+    [_renderPipelineCacheLock lock];
+    MTIRenderPipeline *existingRenderPipeline = self.renderPipelineCache[renderPipelineDescriptor];
+    if (existingRenderPipeline) {
+        renderPipeline = existingRenderPipeline;
+    } else {
+        self.renderPipelineCache[key] = renderPipeline;
+    }
+    [_renderPipelineCacheLock unlock];
     return renderPipeline;
 }
 
 - (MTIComputePipeline *)computePipelineWithDescriptor:(MTLComputePipelineDescriptor *)computePipelineDescriptor error:(NSError * __autoreleasing *)inOutError {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_computePipelineCacheLock lock];
     MTIComputePipeline *computePipeline = self.computePipelineCache[computePipelineDescriptor];
-    if (!computePipeline) {
-        MTLComputePipelineDescriptor *key = [computePipelineDescriptor copy];
-        MTLComputePipelineReflection *reflection; //get reflection
-        NSError *error = nil;
-        id<MTLComputePipelineState> computePipelineState = [self.device newComputePipelineStateWithDescriptor:computePipelineDescriptor options:MTLPipelineOptionArgumentInfo reflection:&reflection error:&error];
-        if (computePipelineState && !error) {
-            computePipeline = [[MTIComputePipeline alloc] initWithState:computePipelineState reflection:reflection];
-            self.computePipelineCache[key] = computePipeline;
-        } else {
-            if (inOutError) {
-                *inOutError = error;
-            }
-            return nil;
-        }
+    [_computePipelineCacheLock unlock];
+    if (computePipeline) {
+        [self recordPerformanceCounter:@"cache.computePipeline.hit" increment:1];
+        return computePipeline;
     }
+    [self recordPerformanceCounter:@"cache.computePipeline.miss" increment:1];
+    MTLComputePipelineReflection *reflection; //get reflection
+    NSError *error = nil;
+    id<MTLComputePipelineState> computePipelineState = [self.device newComputePipelineStateWithDescriptor:computePipelineDescriptor options:MTLPipelineOptionArgumentInfo reflection:&reflection error:&error];
+    if (!computePipelineState || error) {
+        if (inOutError) {
+            *inOutError = error;
+        }
+        return nil;
+    }
+    computePipeline = [[MTIComputePipeline alloc] initWithState:computePipelineState reflection:reflection];
+    MTLComputePipelineDescriptor *key = [computePipelineDescriptor copy];
+    [_computePipelineCacheLock lock];
+    MTIComputePipeline *existingComputePipeline = self.computePipelineCache[computePipelineDescriptor];
+    if (existingComputePipeline) {
+        computePipeline = existingComputePipeline;
+    } else {
+        self.computePipelineCache[key] = computePipeline;
+    }
+    [_computePipelineCacheLock unlock];
     return computePipeline;
 }
 
 - (id)kernelStateForKernel:(id<MTIKernel>)kernel configuration:(id<MTIKernelConfiguration>)configuration error:(NSError * __autoreleasing *)error {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_kernelStateMapLock lock];
     NSMutableDictionary *states = [self.kernelStateMap objectForKey:kernel];
     id<NSCopying> cacheKey = configuration.identifier ?: [NSNull null];
     id cachedState = states[cacheKey];
-    if (!cachedState) {
-        cachedState = [kernel newKernelStateWithContext:self configuration:configuration error:error];
-        if (cachedState) {
-            if (!states) {
-                states = [NSMutableDictionary dictionary];
-                [self.kernelStateMap setObject:states forKey:kernel];
-            }
-            states[cacheKey] = cachedState;
-        }
+    [_kernelStateMapLock unlock];
+    if (cachedState) {
+        [self recordPerformanceCounter:@"cache.kernelState.hit" increment:1];
+        return cachedState;
     }
+    [self recordPerformanceCounter:@"cache.kernelState.miss" increment:1];
+    cachedState = [kernel newKernelStateWithContext:self configuration:configuration error:error];
+    if (!cachedState) {
+        return nil;
+    }
+    [_kernelStateMapLock lock];
+    states = [self.kernelStateMap objectForKey:kernel];
+    id existingState = states[cacheKey];
+    if (existingState) {
+        cachedState = existingState;
+    } else {
+        if (!states) {
+            states = [NSMutableDictionary dictionary];
+            [self.kernelStateMap setObject:states forKey:kernel];
+        }
+        states[cacheKey] = cachedState;
+    }
+    [_kernelStateMapLock unlock];
     return cachedState;
 }
 
 - (nullable id<MTLSamplerState>)samplerStateWithDescriptor:(MTISamplerDescriptor *)descriptor error:(NSError * __autoreleasing *)error {
-    NSAssert([self.renderingLock tryLock] == NO, MTIContextRenderingLockNotLockedErrorDescription);
+    [_samplerStateCacheLock lock];
     id<MTLSamplerState> state = self.samplerStateCache[descriptor];
+    [_samplerStateCacheLock unlock];
+    if (state) {
+        [self recordPerformanceCounter:@"cache.sampler.hit" increment:1];
+        return state;
+    }
+    [self recordPerformanceCounter:@"cache.sampler.miss" increment:1];
+    state = [self.device newSamplerStateWithDescriptor:[descriptor newMTLSamplerDescriptor]];
     if (!state) {
-        state = [self.device newSamplerStateWithDescriptor:[descriptor newMTLSamplerDescriptor]];
-        if (!state) {
-            if (error) {
-                *error = MTIErrorCreate(MTIErrorFailedToCreateSamplerState, nil);
-            }
-            return nil;
+        if (error) {
+            *error = MTIErrorCreate(MTIErrorFailedToCreateSamplerState, nil);
         }
+        return nil;
+    }
+    [_samplerStateCacheLock lock];
+    id<MTLSamplerState> existingState = self.samplerStateCache[descriptor];
+    if (existingState) {
+        state = existingState;
+    } else {
         self.samplerStateCache[descriptor] = state;
     }
+    [_samplerStateCacheLock unlock];
     return state;
 }
 
@@ -665,7 +815,35 @@ static NSString * const MTIContextRenderingLockNotLockedErrorDescription = @"Con
     [_promiseRenderTargetTableLock lock];
     MTIImagePromiseRenderTarget *renderTarget = [_promiseRenderTargetTable objectForKey:promise];
     [_promiseRenderTargetTableLock unlock];
+    [self recordPerformanceCounter:(renderTarget ? @"cache.promiseRenderTarget.hit" : @"cache.promiseRenderTarget.miss") increment:1];
     return renderTarget;
+}
+
+- (void)recordPerformanceCounter:(NSString *)name increment:(NSUInteger)increment {
+    [self.performanceStatisticsRecorder recordCounter:name increment:increment];
+}
+
+- (void)recordPerformanceDuration:(NSString *)name duration:(CFTimeInterval)duration {
+    [self.performanceStatisticsRecorder recordDuration:name duration:duration];
+}
+
+@end
+
+@implementation MTIContext (PerformanceStatistics)
+
+- (BOOL)isPerformanceStatisticsEnabled {
+    return self.performanceStatisticsRecorder != nil;
+}
+
+- (void)resetPerformanceStatistics {
+    [self.performanceStatisticsRecorder reset];
+}
+
+- (MTIPerformanceStatisticsSnapshot *)performanceStatisticsSnapshot {
+    if (self.performanceStatisticsRecorder) {
+        return [self.performanceStatisticsRecorder snapshot];
+    }
+    return [[MTIPerformanceStatisticsSnapshot alloc] initWithCounters:@{} durations:@{}];
 }
 
 @end

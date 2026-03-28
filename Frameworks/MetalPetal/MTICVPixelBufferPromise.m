@@ -425,17 +425,25 @@ static MTLPixelFormat MTIMTLPixelFormatForCVPixelFormatType(OSType type, BOOL sR
 }
 
 - (MTIImagePromiseRenderTarget *)resolveWithContext:(MTIImageRenderingContext *)renderingContext error:(NSError * __autoreleasing *)inOutError {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [renderingContext.context recordPerformanceCounter:@"promise.cvPixelBuffer.resolve.count" increment:1];
+        [renderingContext.context recordPerformanceDuration:@"promise.cvPixelBuffer.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     if (_renderingAPI == MTICVPixelBufferRenderingAPIMetalPetal && CVPixelBufferGetIOSurface(_pixelBuffer) == NULL) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
             NSLog(@"[MTICVPixelBufferPromise] Warning once only: CVPixelBuffer is not backed by IOSurface, fallback to use MTICVPixelBufferRenderingAPICoreImage.");
         });
+        [renderingContext.context recordPerformanceCounter:@"promise.cvPixelBuffer.path.ciFallback" increment:1];
         return [self resolveWithContext_CI:renderingContext error:inOutError];
     }
     switch (self.renderingAPI) {
         case MTICVPixelBufferRenderingAPIMetalPetal:
+            [renderingContext.context recordPerformanceCounter:@"promise.cvPixelBuffer.path.metalPetal" increment:1];
             return [self resolveWithContext_MTI:renderingContext error:inOutError];
         case MTICVPixelBufferRenderingAPICoreImage:
+            [renderingContext.context recordPerformanceCounter:@"promise.cvPixelBuffer.path.coreImage" increment:1];
             return [self resolveWithContext_CI:renderingContext error:inOutError];
         default: {
             NSError *error = MTIErrorCreate(MTIErrorInvalidCVPixelBufferRenderingAPI, nil);

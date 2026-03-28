@@ -70,6 +70,7 @@
 #import "MTILock.h"
 #import "MTIMask.h"
 #import "MTIMemoryWarningObserver.h"
+#import "MTIPerformanceStatistics.h"
 #import "MTIPixelFormat.h"
 #import "MTIRenderGraphOptimization.h"
 #import "MTIRenderPassOutputDescriptor.h"

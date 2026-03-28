@@ -11,6 +11,10 @@ let package = Package(
         .library(
             name: "MetalPetal",
             targets: ["MetalPetal"]
+        ),
+        .executable(
+            name: "MetalPetalBenchmarks",
+            targets: ["MetalPetalBenchmarks"]
         )
     ],
     dependencies: [],
@@ -25,6 +29,10 @@ let package = Package(
             name: "MetalPetalTestHelpers",
             dependencies: ["MetalPetal"],
             path: "Tests/MetalPetalTestHelpers"),
+        .target(
+            name: "MetalPetalBenchmarks",
+            dependencies: ["MetalPetal", "MetalPetalTestHelpers"],
+            path: "Benchmarks/MetalPetalBenchmarks"),
         .testTarget(
             name: "MetalPetalTests",
             dependencies: ["MetalPetal", "MetalPetalTestHelpers"]),

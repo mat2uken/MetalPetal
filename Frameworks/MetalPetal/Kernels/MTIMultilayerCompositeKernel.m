@@ -396,10 +396,17 @@ __attribute__((objc_subclassing_restricted))
 }
 
 - (MTIImagePromiseRenderTarget *)resolveWithContext:(MTIImageRenderingContext *)renderingContext error:(NSError *__autoreleasing  _Nullable *)error {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [renderingContext.context recordPerformanceCounter:@"kernel.multilayer.resolve.count" increment:1];
+        [renderingContext.context recordPerformanceDuration:@"kernel.multilayer.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     BOOL useProgrammableBlending = renderingContext.context.defaultLibrarySupportsProgrammableBlending && renderingContext.context.isProgrammableBlendingSupported;
     if (useProgrammableBlending) {
+        [renderingContext.context recordPerformanceCounter:@"kernel.multilayer.path.programmable" increment:1];
         return [self resolveWithContext_programmableBlending:renderingContext error:error];
     } else {
+        [renderingContext.context recordPerformanceCounter:@"kernel.multilayer.path.fixed" increment:1];
         return [self resolveWithContext_no_programmableBlending:renderingContext error:error];
     }
 }

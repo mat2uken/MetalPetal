@@ -57,6 +57,11 @@
 }
 
 - (MTIImagePromiseRenderTarget *)resolveWithContext:(MTIImageRenderingContext *)renderingContext error:(NSError * __autoreleasing *)error {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [renderingContext.context recordPerformanceCounter:@"promise.url.resolve.count" increment:1];
+        [renderingContext.context recordPerformanceDuration:@"promise.url.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithContentsOfURL:self.URL options:self.options error:error];
     if (!texture) {
         return nil;
@@ -115,6 +120,11 @@
 }
 
 - (MTIImagePromiseRenderTarget *)resolveWithContext:(MTIImageRenderingContext *)renderingContext error:(NSError * __autoreleasing *)error {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [renderingContext.context recordPerformanceCounter:@"promise.legacyCGImage.resolve.count" increment:1];
+        [renderingContext.context recordPerformanceDuration:@"promise.legacyCGImage.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:self.options error:error];
     if (!texture) {
         return nil;
@@ -226,10 +236,46 @@
 }
 
 - (MTIImagePromiseRenderTarget *)resolveWithContext:(MTIImageRenderingContext *)renderingContext error:(NSError * __autoreleasing *)inOutError {
+    CFTimeInterval startTime = CFAbsoluteTimeGetCurrent();
+    @MTI_DEFER {
+        [renderingContext.context recordPerformanceCounter:@"promise.cgImage.resolve.count" increment:1];
+        [renderingContext.context recordPerformanceDuration:@"promise.cgImage.resolve.duration" duration:(CFAbsoluteTimeGetCurrent() - startTime)];
+    };
     size_t pixelWidth = _properties.pixelWidth;
     size_t pixelHeight = _properties.pixelHeight;
     size_t displayWidth = _properties.displayWidth;
     size_t displayHeight = _properties.displayHeight;
+    CGColorSpaceRef imageColorSpace = CGImageGetColorSpace(_image);
+    CGColorSpaceRef specifiedColorSpace = _options.colorSpace ?: imageColorSpace;
+    BOOL usesIdentityGeometry = (_properties.orientation == kCGImagePropertyOrientationUp &&
+                                 !_options.flipsVertically &&
+                                 pixelWidth == displayWidth &&
+                                 pixelHeight == displayHeight);
+    BOOL canUseTextureLoaderFastPath = (usesIdentityGeometry &&
+                                        specifiedColorSpace != nil &&
+                                        imageColorSpace != nil &&
+                                        CGColorSpaceGetModel(specifiedColorSpace) == kCGColorSpaceModelRGB &&
+                                        CGColorSpaceGetModel(imageColorSpace) == kCGColorSpaceModelRGB &&
+                                        CFEqual(specifiedColorSpace, imageColorSpace));
+    if (canUseTextureLoaderFastPath) {
+        NSDictionary<MTKTextureLoaderOption, id> *textureLoaderOptions = @{
+            MTKTextureLoaderOptionSRGB: @NO,
+            MTKTextureLoaderOptionTextureStorageMode: @(_options.storageMode),
+            MTKTextureLoaderOptionTextureCPUCacheMode: @(_options.cpuCacheMode)
+        };
+        NSError *textureLoaderError = nil;
+        id<MTLTexture> texture = [renderingContext.context.textureLoader newTextureWithCGImage:self.image options:textureLoaderOptions error:&textureLoaderError];
+        if (texture) {
+            if (@available(iOS 12.0, macOS 10.14, *)) {
+                id<MTLBlitCommandEncoder> blitCommandEncoder = [renderingContext.commandBuffer blitCommandEncoder];
+                [blitCommandEncoder optimizeContentsForGPUAccess:texture];
+                [blitCommandEncoder endEncoding];
+            }
+            [renderingContext.context recordPerformanceCounter:@"promise.cgImage.fastPath.textureLoader.hit" increment:1];
+            return [renderingContext.context newRenderTargetWithTexture:texture];
+        }
+        [renderingContext.context recordPerformanceCounter:@"promise.cgImage.fastPath.textureLoader.fallback" increment:1];
+    }
     CVPixelBufferRef pixelBuffer = nil;
     CVPixelBufferCreate(kCFAllocatorDefault,
                         displayWidth,
@@ -249,7 +295,6 @@
     };
     
     CGColorSpaceRef colorSpace = nil;
-    CGColorSpaceRef specifiedColorSpace = _options.colorSpace ?: CGImageGetColorSpace(_image);
     if (CGColorSpaceGetModel(specifiedColorSpace) == kCGColorSpaceModelRGB) {
         colorSpace = CGColorSpaceRetain(specifiedColorSpace);
     } else {

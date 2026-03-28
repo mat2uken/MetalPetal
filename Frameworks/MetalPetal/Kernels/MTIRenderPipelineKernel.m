@@ -29,6 +29,50 @@
 
 NSUInteger const MTIRenderPipelineMaximumColorAttachmentCount = 8;
 
+@interface MTIRenderPipeline (BindingMetadata)
+
+@property (nonatomic, strong, readonly) NSArray<MTLArgument *> *vertexTextureArguments;
+@property (nonatomic, strong, readonly) NSArray<MTLArgument *> *fragmentTextureArguments;
+@property (nonatomic, strong, readonly) NSArray<MTLArgument *> *vertexBufferArguments;
+@property (nonatomic, strong, readonly) NSArray<MTLArgument *> *fragmentBufferArguments;
+
+@end
+
+static BOOL MTIEncodeTextureBindings(NSArray<MTLArgument *> *arguments,
+                                     NSArray<MTIImage *> *images,
+                                     MTIImageRenderingContext *renderingContext,
+                                     id<MTLRenderCommandEncoder> commandEncoder,
+                                     BOOL vertexStage,
+                                     MTIRenderPipelineKernel *kernel,
+                                     NSError * __autoreleasing *inOutError) {
+    for (MTLArgument *argument in arguments) {
+        NSUInteger index = argument.index;
+        if (index >= images.count) {
+            NSCAssert(NO, @"Failed to set %@ textures.", vertexStage ? @"vertex" : @"fragment");
+            if (inOutError) {
+                NSDictionary *userInfo = @{
+                    @"kernel": kernel,
+                    @"stage": vertexStage ? @"vertex" : @"fragment",
+                    @"argument": argument.name
+                };
+                *inOutError = MTIErrorCreate(MTIErrorTextureBindingFailed, userInfo);
+            }
+            return NO;
+        }
+        MTIImage *image = images[index];
+        id<MTLTexture> texture = [renderingContext resolvedTextureForImage:image];
+        id<MTLSamplerState> samplerState = [renderingContext resolvedSamplerStateForImage:image];
+        if (vertexStage) {
+            [commandEncoder setVertexTexture:texture atIndex:index];
+            [commandEncoder setVertexSamplerState:samplerState atIndex:index];
+        } else {
+            [commandEncoder setFragmentTexture:texture atIndex:index];
+            [commandEncoder setFragmentSamplerState:samplerState atIndex:index];
+        }
+    }
+    return YES;
+}
+
 @interface MTIRenderPipelineKernelConfiguration () {
     MTLPixelFormat _pixelFormats[MTIRenderPipelineMaximumColorAttachmentCount];
 }
@@ -199,25 +243,213 @@ __attribute__((objc_subclassing_restricted))
 
 @property (nonatomic, readonly) NSUInteger rasterSampleCount;
 
+@property (nonatomic, strong, readonly) MTIWeakToStrongObjectsMapTable *preparedStateCache;
+@property (nonatomic, strong, readonly) id<NSLocking> preparedStateCacheLock;
+
+@end
+
+__attribute__((objc_subclassing_restricted))
+@interface MTIImageRenderingRecipePreparedState : NSObject
+
+@property (nonatomic, strong, readonly) MTIRenderPipelineKernelConfiguration *configuration;
+@property (nonatomic, copy, readonly) NSArray<MTITextureDescriptor *> *outputTextureDescriptors;
+@property (nonatomic, copy, readonly) NSData *colorAttachmentPixelFormatsData;
+
+- (instancetype)initWithConfiguration:(MTIRenderPipelineKernelConfiguration *)configuration
+               outputTextureDescriptors:(NSArray<MTITextureDescriptor *> *)outputTextureDescriptors
+         colorAttachmentPixelFormatsData:(NSData *)colorAttachmentPixelFormatsData;
+
+@end
+
+@implementation MTIImageRenderingRecipePreparedState
+
+- (instancetype)initWithConfiguration:(MTIRenderPipelineKernelConfiguration *)configuration
+               outputTextureDescriptors:(NSArray<MTITextureDescriptor *> *)outputTextureDescriptors
+         colorAttachmentPixelFormatsData:(NSData *)colorAttachmentPixelFormatsData {
+    if (self = [super init]) {
+        _configuration = configuration;
+        _outputTextureDescriptors = [outputTextureDescriptors copy];
+        _colorAttachmentPixelFormatsData = [colorAttachmentPixelFormatsData copy];
+    }
+    return self;
+}
+
 @end
 
 @implementation MTIImageRenderingRecipe
+
+- (MTIImageRenderingRecipePreparedState *)preparedStateForContext:(MTIContext *)context {
+    [self.preparedStateCacheLock lock];
+    MTIImageRenderingRecipePreparedState *preparedState = [self.preparedStateCache objectForKey:context];
+    [self.preparedStateCacheLock unlock];
+    if (preparedState) {
+        return preparedState;
+    }
+    
+    NSUInteger outputCount = self.outputDescriptors.count;
+    MTLPixelFormat pixelFormats[outputCount];
+    NSMutableArray<MTITextureDescriptor *> *textureDescriptors = [NSMutableArray arrayWithCapacity:outputCount];
+    for (NSUInteger index = 0; index < outputCount; index += 1) {
+        MTIRenderPassOutputDescriptor *outputDescriptor = self.outputDescriptors[index];
+        MTLPixelFormat pixelFormat = (outputDescriptor.pixelFormat == MTIPixelFormatUnspecified) ? context.workingPixelFormat : outputDescriptor.pixelFormat;
+        pixelFormats[index] = pixelFormat;
+        [textureDescriptors addObject:[MTITextureDescriptor texture2DDescriptorWithPixelFormat:pixelFormat width:outputDescriptor.dimensions.width height:outputDescriptor.dimensions.height mipmapped:NO usage:MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead resourceOptions:MTLResourceStorageModePrivate]];
+    }
+    preparedState = [[MTIImageRenderingRecipePreparedState alloc] initWithConfiguration:[MTIRenderPipelineKernelConfiguration configurationWithColorAttachmentPixelFormats:pixelFormats count:outputCount rasterSampleCount:_rasterSampleCount]
+                                                                 outputTextureDescriptors:textureDescriptors
+                                                           colorAttachmentPixelFormatsData:[NSData dataWithBytes:pixelFormats length:sizeof(MTLPixelFormat) * outputCount]];
+    [self.preparedStateCacheLock lock];
+    MTIImageRenderingRecipePreparedState *cachedPreparedState = [self.preparedStateCache objectForKey:context];
+    if (cachedPreparedState) {
+        preparedState = cachedPreparedState;
+    } else {
+        [self.preparedStateCache setObject:preparedState forKey:context];
+    }
+    [self.preparedStateCacheLock unlock];
+    return preparedState;
+}
+
+- (NSArray<MTIImagePromiseRenderTarget *> *)resolveSingleCommandWithPreparedState:(MTIImageRenderingRecipePreparedState *)preparedState
+                                                                         context:(MTIImageRenderingContext *)renderingContext
+                                                                           error:(NSError * __autoreleasing *)inOutError {
+    NSError *error = nil;
+    MTIRenderPassOutputDescriptor *outputDescriptor = self.outputDescriptors.firstObject;
+    MTITextureDescriptor *textureDescriptor = preparedState.outputTextureDescriptors.firstObject;
+    MTIImagePromiseRenderTarget *renderTarget = [renderingContext.context newRenderTargetWithReusableTextureDescriptor:textureDescriptor error:&error];
+    if (error) {
+        if (inOutError) {
+            *inOutError = error;
+        }
+        return nil;
+    }
+    
+    MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    if (_rasterSampleCount > 1) {
+        if (renderingContext.context.isMemorylessTextureSupported) {
+            MTLTextureDescriptor *tempTextureDescriptor = [textureDescriptor newMTLTextureDescriptor];
+            tempTextureDescriptor.textureType = MTLTextureType2DMultisample;
+            tempTextureDescriptor.usage = MTLTextureUsageRenderTarget;
+            if (@available(macCatalyst 14.0, macOS 11.0, *)) {
+                tempTextureDescriptor.storageMode = MTLStorageModeMemoryless;
+            } else {
+                NSAssert(NO, @"");
+            }
+            tempTextureDescriptor.sampleCount = _rasterSampleCount;
+            id<MTLTexture> msaaTexture = [renderingContext.context.device newTextureWithDescriptor:tempTextureDescriptor];
+            if (!msaaTexture) {
+                if (inOutError) {
+                    *inOutError = MTIErrorCreate(MTIErrorFailedToCreateTexture, nil);
+                }
+                return nil;
+            }
+            renderPassDescriptor.colorAttachments[0].texture = msaaTexture;
+            renderPassDescriptor.colorAttachments[0].clearColor = outputDescriptor.clearColor;
+            renderPassDescriptor.colorAttachments[0].loadAction = (outputDescriptor.loadAction == MTLLoadActionLoad) ? MTLLoadActionClear : outputDescriptor.loadAction;
+            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+            renderPassDescriptor.colorAttachments[0].resolveTexture = renderTarget.texture;
+        } else {
+            MTLTextureDescriptor *tempTextureDescriptor = [textureDescriptor newMTLTextureDescriptor];
+            tempTextureDescriptor.textureType = MTLTextureType2DMultisample;
+            tempTextureDescriptor.usage = MTLTextureUsageRenderTarget;
+            tempTextureDescriptor.sampleCount = _rasterSampleCount;
+            MTIImagePromiseRenderTarget *msaaTarget = [renderingContext.context newRenderTargetWithReusableTextureDescriptor:[tempTextureDescriptor newMTITextureDescriptor] error:&error];
+            if (error) {
+                if (inOutError) {
+                    *inOutError = error;
+                }
+                return nil;
+            }
+            renderPassDescriptor.colorAttachments[0].texture = msaaTarget.texture;
+            renderPassDescriptor.colorAttachments[0].clearColor = outputDescriptor.clearColor;
+            renderPassDescriptor.colorAttachments[0].loadAction = outputDescriptor.loadAction;
+            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+            renderPassDescriptor.colorAttachments[0].resolveTexture = renderTarget.texture;
+            [msaaTarget releaseTexture];
+        }
+    } else {
+        renderPassDescriptor.colorAttachments[0].texture = renderTarget.texture;
+        renderPassDescriptor.colorAttachments[0].clearColor = outputDescriptor.clearColor;
+        renderPassDescriptor.colorAttachments[0].loadAction = outputDescriptor.loadAction;
+        renderPassDescriptor.colorAttachments[0].storeAction = outputDescriptor.storeAction;
+    }
+    
+    id<MTLRenderCommandEncoder> commandEncoder = [renderingContext.commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+    if (!commandEncoder) {
+        if (inOutError) {
+            *inOutError = MTIErrorCreate(MTIErrorFailedToCreateCommandEncoder, nil);
+        }
+        return nil;
+    }
+    
+    MTIRenderCommand *command = self.renderCommands.firstObject;
+    CFTimeInterval pipelineLookupStartTime = CFAbsoluteTimeGetCurrent();
+    MTIRenderPipeline *renderPipeline = [renderingContext.context kernelStateForKernel:command.kernel configuration:preparedState.configuration error:&error];
+    [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.pipelineLookup.duration" duration:(CFAbsoluteTimeGetCurrent() - pipelineLookupStartTime)];
+    if (error) {
+        if (inOutError) {
+            *inOutError = error;
+        }
+        [commandEncoder endEncoding];
+        return nil;
+    }
+    
+    [commandEncoder setRenderPipelineState:renderPipeline.state];
+    
+    CFTimeInterval textureBindingStartTime = CFAbsoluteTimeGetCurrent();
+    if (!MTIEncodeTextureBindings(renderPipeline.vertexTextureArguments, command.images, renderingContext, commandEncoder, YES, command.kernel, &error) ||
+        !MTIEncodeTextureBindings(renderPipeline.fragmentTextureArguments, command.images, renderingContext, commandEncoder, NO, command.kernel, &error)) {
+        if (inOutError) {
+            *inOutError = error;
+        }
+        [commandEncoder endEncoding];
+        return nil;
+    }
+    [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.textureBinding.duration" duration:(CFAbsoluteTimeGetCurrent() - textureBindingStartTime)];
+    
+    if (command.parameters.count > 0) {
+        CFTimeInterval parameterEncodingStartTime = CFAbsoluteTimeGetCurrent();
+        [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.vertexBufferArguments values:command.parameters functionType:MTLFunctionTypeVertex encoder:commandEncoder error:&error];
+        if (error) {
+            if (inOutError) {
+                *inOutError = error;
+            }
+            [commandEncoder endEncoding];
+            return nil;
+        }
+        [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.fragmentBufferArguments values:command.parameters functionType:MTLFunctionTypeFragment encoder:commandEncoder error:&error];
+        if (error) {
+            if (inOutError) {
+                *inOutError = error;
+            }
+            [commandEncoder endEncoding];
+            return nil;
+        }
+        [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.parameterEncoding.duration" duration:(CFAbsoluteTimeGetCurrent() - parameterEncodingStartTime)];
+    }
+    
+    CFTimeInterval drawEncodingStartTime = CFAbsoluteTimeGetCurrent();
+    [command.geometry encodeDrawCallWithCommandEncoder:commandEncoder context:renderPipeline];
+    [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.drawEncoding.duration" duration:(CFAbsoluteTimeGetCurrent() - drawEncodingStartTime)];
+    [commandEncoder endEncoding];
+    [renderingContext.context recordPerformanceCounter:@"rendergraph.promiseResolve.fastPath.singleCommand.count" increment:1];
+    return @[renderTarget];
+}
 
 - (NSArray<MTIImagePromiseRenderTarget *> *)resolveWithContext:(MTIImageRenderingContext *)renderingContext resolver:(id<MTIImagePromise>)promise error:(NSError * __autoreleasing *)inOutError {
     NSError *error = nil;
 
     MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    MTIImageRenderingRecipePreparedState *preparedState = [self preparedStateForContext:renderingContext.context];
+    if (self.renderCommands.count == 1 && self.outputDescriptors.count == 1) {
+        return [self resolveSingleCommandWithPreparedState:preparedState context:renderingContext error:inOutError];
+    }
     
     NSUInteger outputCount = self.outputDescriptors.count;
-    MTLPixelFormat pixelFormats[outputCount];
+    const MTLPixelFormat *pixelFormats = preparedState.colorAttachmentPixelFormatsData.bytes;
     MTIImagePromiseRenderTarget *renderTargets[outputCount];
     for (NSUInteger index = 0; index < outputCount; index += 1) {
         MTIRenderPassOutputDescriptor *outputDescriptor = self.outputDescriptors[index];
-        
-        MTLPixelFormat pixelFormat = (outputDescriptor.pixelFormat == MTIPixelFormatUnspecified) ? renderingContext.context.workingPixelFormat : outputDescriptor.pixelFormat;
-        pixelFormats[index] = pixelFormat;
-        
-        MTITextureDescriptor *textureDescriptor = [MTITextureDescriptor texture2DDescriptorWithPixelFormat:pixelFormat width:outputDescriptor.dimensions.width height:outputDescriptor.dimensions.height mipmapped:NO usage:MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead resourceOptions:MTLResourceStorageModePrivate];
+        MTITextureDescriptor *textureDescriptor = preparedState.outputTextureDescriptors[index];
         MTIImagePromiseRenderTarget *renderTarget = [renderingContext.context newRenderTargetWithReusableTextureDescriptor:textureDescriptor error:&error];
         if (error) {
             if (inOutError) {
@@ -293,7 +525,9 @@ __attribute__((objc_subclassing_restricted))
     }
     
     for (MTIRenderCommand *command in self.renderCommands) {
-        MTIRenderPipeline *renderPipeline = [renderingContext.context kernelStateForKernel:command.kernel configuration:[MTIRenderPipelineKernelConfiguration configurationWithColorAttachmentPixelFormats:pixelFormats count:outputCount rasterSampleCount:_rasterSampleCount] error:&error];
+        CFTimeInterval pipelineLookupStartTime = CFAbsoluteTimeGetCurrent();
+        MTIRenderPipeline *renderPipeline = [renderingContext.context kernelStateForKernel:command.kernel configuration:preparedState.configuration error:&error];
+        [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.pipelineLookup.duration" duration:(CFAbsoluteTimeGetCurrent() - pipelineLookupStartTime)];
         
         if (error) {
             if (inOutError) {
@@ -306,57 +540,21 @@ __attribute__((objc_subclassing_restricted))
         
         [commandEncoder setRenderPipelineState:renderPipeline.state];
         
-        for (MTLArgument *argument in renderPipeline.reflection.vertexArguments) {
-            if (argument.type == MTLArgumentTypeTexture) {
-                NSUInteger index = argument.index;
-                if (index < command.images.count) {
-                    id<MTLTexture> texture = [renderingContext resolvedTextureForImage:command.images[index]];
-                    id<MTLSamplerState> samplerState = [renderingContext resolvedSamplerStateForImage:command.images[index]];
-                    [commandEncoder setVertexTexture:texture atIndex:index];
-                    [commandEncoder setVertexSamplerState:samplerState atIndex:index];
-                } else {
-                    NSAssert(NO, @"Failed to set vertex textures.");
-                    if (inOutError) {
-                        NSDictionary *userInfo = @{
-                            @"kernel": command.kernel,
-                            @"stage": @"vertex",
-                            @"argument": argument.name
-                        };
-                        *inOutError = MTIErrorCreate(MTIErrorTextureBindingFailed, userInfo);
-                    }
-                    [commandEncoder endEncoding];
-                    return nil;
-                }
+        CFTimeInterval textureBindingStartTime = CFAbsoluteTimeGetCurrent();
+        if (!MTIEncodeTextureBindings(renderPipeline.vertexTextureArguments, command.images, renderingContext, commandEncoder, YES, command.kernel, &error) ||
+            !MTIEncodeTextureBindings(renderPipeline.fragmentTextureArguments, command.images, renderingContext, commandEncoder, NO, command.kernel, &error)) {
+            if (inOutError) {
+                *inOutError = error;
             }
+            [commandEncoder endEncoding];
+            return nil;
         }
-        
-        for (MTLArgument *argument in renderPipeline.reflection.fragmentArguments) {
-            if (argument.type == MTLArgumentTypeTexture) {
-                NSUInteger index = argument.index;
-                if (index < command.images.count) {
-                    id<MTLTexture> texture = [renderingContext resolvedTextureForImage:command.images[index]];
-                    id<MTLSamplerState> samplerState = [renderingContext resolvedSamplerStateForImage:command.images[index]];
-                    [commandEncoder setFragmentTexture:texture atIndex:index];
-                    [commandEncoder setFragmentSamplerState:samplerState atIndex:index];
-                } else {
-                    NSAssert(NO, @"Failed to set fragment textures.");
-                    if (inOutError) {
-                        NSDictionary *userInfo = @{
-                            @"kernel": command.kernel,
-                            @"stage": @"fragment",
-                            @"argument": argument.name
-                        };
-                        *inOutError = MTIErrorCreate(MTIErrorTextureBindingFailed, userInfo);
-                    }
-                    [commandEncoder endEncoding];
-                    return nil;
-                }
-            }
-        }
+        [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.textureBinding.duration" duration:(CFAbsoluteTimeGetCurrent() - textureBindingStartTime)];
                 
         //encode parameters
         if (command.parameters.count > 0) {
-            [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.reflection.vertexArguments values:command.parameters functionType:MTLFunctionTypeVertex encoder:commandEncoder error:&error];
+            CFTimeInterval parameterEncodingStartTime = CFAbsoluteTimeGetCurrent();
+            [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.vertexBufferArguments values:command.parameters functionType:MTLFunctionTypeVertex encoder:commandEncoder error:&error];
             if (error) {
                 NSAssert(NO, @"Cannot encode vertex arguments: %@", error);
                 if (inOutError) {
@@ -366,7 +564,7 @@ __attribute__((objc_subclassing_restricted))
                 return nil;
             }
             
-            [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.reflection.fragmentArguments values:command.parameters functionType:MTLFunctionTypeFragment encoder:commandEncoder error:&error];
+            [MTIFunctionArgumentsEncoder encodeArguments:renderPipeline.fragmentBufferArguments values:command.parameters functionType:MTLFunctionTypeFragment encoder:commandEncoder error:&error];
             if (error) {
                 NSAssert(NO, @"Cannot encode fragment arguments: %@", error);
                 if (inOutError) {
@@ -375,9 +573,12 @@ __attribute__((objc_subclassing_restricted))
                 [commandEncoder endEncoding];
                 return nil;
             }
+            [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.parameterEncoding.duration" duration:(CFAbsoluteTimeGetCurrent() - parameterEncodingStartTime)];
         }
         
+        CFTimeInterval drawEncodingStartTime = CFAbsoluteTimeGetCurrent();
         [command.geometry encodeDrawCallWithCommandEncoder:commandEncoder context:renderPipeline];
+        [renderingContext.context recordPerformanceDuration:@"rendergraph.promiseResolve.drawEncoding.duration" duration:(CFAbsoluteTimeGetCurrent() - drawEncodingStartTime)];
     }
     
     [commandEncoder endEncoding];
@@ -415,6 +616,8 @@ __attribute__((objc_subclassing_restricted))
             _resolutionCache = [[MTIWeakToStrongObjectsMapTable alloc] init];
             _resolutionCacheLock = MTILockCreate();
         }
+        _preparedStateCache = [[MTIWeakToStrongObjectsMapTable alloc] init];
+        _preparedStateCacheLock = MTILockCreate();
     }
     return self;
 }

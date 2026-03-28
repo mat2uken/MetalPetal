@@ -56,6 +56,9 @@ __attribute__((objc_subclassing_restricted))
 /// The texture pool class to use. When this property is nil, the context uses `MTIHeapTexturePool` if possible, and falls back to `MTIDeviceTexturePool`.
 @property (nonatomic, nullable) Class<MTITexturePool> texturePoolClass;
 
+/// Whether to collect internal performance counters and durations. The default value is NO.
+@property (nonatomic) BOOL enablesPerformanceStatistics;
+
 @end
 
 FOUNDATION_EXPORT NSURL * _Nullable MTIDefaultLibraryURLForBundle(NSBundle *bundle);
