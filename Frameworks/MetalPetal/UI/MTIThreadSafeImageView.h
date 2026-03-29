@@ -49,6 +49,9 @@ __attribute__((objc_subclassing_restricted))
 /// Controls whether property updates render immediately on the calling thread or coalesce onto an internal serial queue.
 @property (atomic) MTIThreadSafeImageViewRenderSchedulingMode renderSchedulingMode;
 
+/// Enables the experimental Metal 4 batched drawable submission path when coalesced scheduling is active. Defaults to NO.
+@property (atomic) BOOL prefersMetal4BatchedSubmission;
+
 @property (atomic, strong, nullable) MTIContext *context;
 
 @property (atomic, nullable, strong) MTIImage *image;

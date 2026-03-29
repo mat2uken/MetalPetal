@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 52;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -69,6 +69,8 @@
 		9D4929FA261E1B580011E8AF /* ColorLookupTable.png in Resources */ = {isa = PBXBuildFile; fileRef = 9D4929C1261E1B580011E8AF /* ColorLookupTable.png */; };
 		9D4929FB261E1B580011E8AF /* art.scnassets in Resources */ = {isa = PBXBuildFile; fileRef = 9D4929C2261E1B580011E8AF /* art.scnassets */; };
 		9D4929FC261E1B580011E8AF /* art.scnassets in Resources */ = {isa = PBXBuildFile; fileRef = 9D4929C2261E1B580011E8AF /* art.scnassets */; };
+		E6A2C1014B424C7A00A10001 /* ThreadSafeImageViewStressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6A2C1004B424C7A00A10001 /* ThreadSafeImageViewStressView.swift */; };
+		E6A2C1024B424C7A00A10001 /* ThreadSafeImageViewStressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6A2C1004B424C7A00A10001 /* ThreadSafeImageViewStressView.swift */; };
 		9D492A0C261E1D320011E8AF /* VideoIO in Frameworks */ = {isa = PBXBuildFile; productRef = 9D492A0B261E1D320011E8AF /* VideoIO */; };
 		9D492A10261E1D420011E8AF /* VideoIO in Frameworks */ = {isa = PBXBuildFile; productRef = 9D492A0F261E1D420011E8AF /* VideoIO */; };
 		9D4985AB26454E39003B8281 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9D4985AA26454E39003B8281 /* AVKit.framework */; };
@@ -115,6 +117,7 @@
 		9D4929C0261E1B580011E8AF /* MetalKitView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MetalKitView.swift; sourceTree = "<group>"; };
 		9D4929C1261E1B580011E8AF /* ColorLookupTable.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = ColorLookupTable.png; sourceTree = "<group>"; };
 		9D4929C2261E1B580011E8AF /* art.scnassets */ = {isa = PBXFileReference; lastKnownFileType = wrapper.scnassets; path = art.scnassets; sourceTree = "<group>"; };
+		E6A2C1004B424C7A00A10001 /* ThreadSafeImageViewStressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadSafeImageViewStressView.swift; sourceTree = "<group>"; };
 		9D4985AA26454E39003B8281 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -175,6 +178,7 @@
 				9D4929B9261E1B580011E8AF /* SketchBoardView.swift */,
 				9D4929A9261E1B580011E8AF /* SceneKitSupportView.swift */,
 				9D4929A4261E1B580011E8AF /* BouncingBallsView.swift */,
+				E6A2C1004B424C7A00A10001 /* ThreadSafeImageViewStressView.swift */,
 				9D4929C0261E1B580011E8AF /* MetalKitView.swift */,
 				9D4929A8261E1B580011E8AF /* PixelBufferPoolBackedImageRenderer.swift */,
 				9D4929A5261E1B580011E8AF /* ShaderTypes.h */,
@@ -391,6 +395,7 @@
 				9D4929DF261E1B580011E8AF /* DemoImages.swift in Sources */,
 				9D4929F7261E1B580011E8AF /* MetalKitView.swift in Sources */,
 				9D4929E7261E1B580011E8AF /* GaussianBlurFilterView.swift in Sources */,
+				E6A2C1014B424C7A00A10001 /* ThreadSafeImageViewStressView.swift in Sources */,
 				9D492985261E19E80011E8AF /* MetalPetalExamplesApp.swift in Sources */,
 				9D4929F3261E1B580011E8AF /* HomeView.swift in Sources */,
 				9D4929E1261E1B580011E8AF /* VisualEffectBlur-iOS.swift in Sources */,
@@ -423,6 +428,7 @@
 				9D4929E0261E1B580011E8AF /* DemoImages.swift in Sources */,
 				9D4929F8261E1B580011E8AF /* MetalKitView.swift in Sources */,
 				9D4929E8261E1B580011E8AF /* GaussianBlurFilterView.swift in Sources */,
+				E6A2C1024B424C7A00A10001 /* ThreadSafeImageViewStressView.swift in Sources */,
 				9D492986261E19E80011E8AF /* MetalPetalExamplesApp.swift in Sources */,
 				9D4929F4261E1B580011E8AF /* HomeView.swift in Sources */,
 				9D4929E2261E1B580011E8AF /* VisualEffectBlur-iOS.swift in Sources */,
@@ -561,13 +567,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4VSXQAQDT9;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/iOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.metalpetal.MetalPetalExamples;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.co.roland.metalpetal.MetalPetalExamples;
 				PRODUCT_NAME = MetalPetalExamples;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -581,13 +588,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4VSXQAQDT9;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = MetalPetalExamples/iOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.metalpetal.MetalPetalExamples;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.co.roland.metalpetal.MetalPetalExamples;
 				PRODUCT_NAME = MetalPetalExamples;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;

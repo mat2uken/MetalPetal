@@ -55,6 +55,11 @@ struct HomeView: View {
                 NavigationLink(destination: BouncingBallsView()) {
                     Text("Particles")
                 }
+                #if os(iOS)
+                NavigationLink(destination: ThreadSafeImageViewStressView()) {
+                    Text("Thread-Safe Image Views")
+                }
+                #endif
             }
             .groupedListStyle()
             .inlineNavigationBarTitle("MetalPetal Examples")
