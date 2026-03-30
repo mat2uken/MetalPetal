@@ -1,5 +1,6 @@
 #if os(iOS)
 
+import Darwin
 import Metal
 import MetalPetal
 import SwiftUI
@@ -17,6 +18,17 @@ private enum ThreadSafeImageViewDemoSchedulingMode: String, CaseIterable, Identi
             return .immediate
         case .coalesced:
             return .coalesced
+        }
+    }
+
+    init?(launchArgument: String) {
+        switch launchArgument.lowercased() {
+        case "immediate":
+            self = .immediate
+        case "coalesced":
+            self = .coalesced
+        default:
+            return nil
         }
     }
 }
@@ -44,12 +56,68 @@ private enum ThreadSafeImageViewDemoWorkload: String, CaseIterable, Identifiable
             return "Use this to stress MTIImage creation and destruction. Source texture cache hits should climb, while batched submission is expected to fall back."
         }
     }
+
+    init?(launchArgument: String) {
+        switch launchArgument.lowercased() {
+        case "batch", "preparedframes", "prepared":
+            self = .preparedFrames
+        case "churn", "cgimagechurn":
+            self = .cgImageChurn
+        default:
+            return nil
+        }
+    }
+}
+
+private struct ThreadSafeImageViewAutoBenchmarkConfig {
+    let warmupSeconds: TimeInterval
+    let durationSeconds: TimeInterval
+    let exitsWhenFinished: Bool
 }
 
 private enum ThreadSafeImageViewStressLaunchOptions {
     private static let arguments = ProcessInfo.processInfo.arguments
 
     static let prefersMetal4BatchedSubmission = arguments.contains("-mti-enable-metal4-batched-submission")
+    static let schedulingMode = value(after: "-mti-thread-safe-scheduling").flatMap(ThreadSafeImageViewDemoSchedulingMode.init(launchArgument:))
+    static let workload = value(after: "-mti-thread-safe-workload").flatMap(ThreadSafeImageViewDemoWorkload.init(launchArgument:))
+    static let tileCount = intValue(after: "-mti-thread-safe-views")
+    static let updatesPerSecond = doubleValue(after: "-mti-thread-safe-updates")
+    static let autoBenchmark = benchmarkConfiguration()
+
+    private static func benchmarkConfiguration() -> ThreadSafeImageViewAutoBenchmarkConfig? {
+        guard let duration = doubleValue(after: "-mti-thread-safe-benchmark-seconds"), duration > 0 else {
+            return nil
+        }
+        let warmup = max(doubleValue(after: "-mti-thread-safe-benchmark-warmup-seconds") ?? 2, 0)
+        let exitsWhenFinished = !arguments.contains("-mti-thread-safe-benchmark-no-exit")
+        return ThreadSafeImageViewAutoBenchmarkConfig(
+            warmupSeconds: warmup,
+            durationSeconds: duration,
+            exitsWhenFinished: exitsWhenFinished
+        )
+    }
+
+    private static func value(after flag: String) -> String? {
+        guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+
+    private static func intValue(after flag: String) -> Int? {
+        guard let value = value(after: flag) else {
+            return nil
+        }
+        return Int(value)
+    }
+
+    private static func doubleValue(after flag: String) -> Double? {
+        guard let value = value(after: flag) else {
+            return nil
+        }
+        return Double(value)
+    }
 }
 
 private struct ThreadSafeImageViewMetricRow: Identifiable {
@@ -84,10 +152,17 @@ private final class ThreadSafeImageViewStressModel: ObservableObject {
     private var preparedFrames: [MTIImage] = []
     private var frameTimer: Timer?
     private var metricsTimer: Timer?
+    private var autoBenchmarkStartWorkItem: DispatchWorkItem?
+    private var autoBenchmarkFinishWorkItem: DispatchWorkItem?
+    private var hasScheduledAutoBenchmark = false
     private var tick: Int = 0
 
     init() {
         self.prefersMetal4BatchedSubmission = ThreadSafeImageViewStressLaunchOptions.prefersMetal4BatchedSubmission
+        self.schedulingMode = ThreadSafeImageViewStressLaunchOptions.schedulingMode ?? .coalesced
+        self.workload = ThreadSafeImageViewStressLaunchOptions.workload ?? .preparedFrames
+        self.tileCount = max(ThreadSafeImageViewStressLaunchOptions.tileCount ?? 9, 1)
+        self.updatesPerSecond = max(ThreadSafeImageViewStressLaunchOptions.updatesPerSecond ?? 6, 1)
         let device = MTLCreateSystemDefaultDevice()!
         let options = MTIContextOptions()
         options.enablesPerformanceStatistics = true
@@ -101,11 +176,14 @@ private final class ThreadSafeImageViewStressModel: ObservableObject {
     deinit {
         frameTimer?.invalidate()
         metricsTimer?.invalidate()
+        autoBenchmarkStartWorkItem?.cancel()
+        autoBenchmarkFinishWorkItem?.cancel()
     }
 
     func onAppear() {
         restartTimers()
         refreshMetrics()
+        scheduleAutoBenchmarkIfNeeded()
     }
 
     func onDisappear() {
@@ -113,6 +191,10 @@ private final class ThreadSafeImageViewStressModel: ObservableObject {
         frameTimer = nil
         metricsTimer?.invalidate()
         metricsTimer = nil
+        autoBenchmarkStartWorkItem?.cancel()
+        autoBenchmarkStartWorkItem = nil
+        autoBenchmarkFinishWorkItem?.cancel()
+        autoBenchmarkFinishWorkItem = nil
     }
 
     func step() {
@@ -180,6 +262,7 @@ private final class ThreadSafeImageViewStressModel: ObservableObject {
                 self.context.resetPerformanceStatistics()
                 self.advanceTick()
                 self.refreshMetrics()
+                self.scheduleAutoBenchmarkIfNeeded()
             }
         }
     }
@@ -225,11 +308,80 @@ private final class ThreadSafeImageViewStressModel: ObservableObject {
             ThreadSafeImageViewMetricRow(id: "candidate", title: "Batch Candidates", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.candidate"])),
             ThreadSafeImageViewMetricRow(id: "metal4items", title: "Metal 4 Items", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.metal4.items"])),
             ThreadSafeImageViewMetricRow(id: "metal4commit", title: "Metal 4 Commits", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.metal4.commit"])),
-            ThreadSafeImageViewMetricRow(id: "classicfallback", title: "Classic Fallbacks", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.classicFallback"])),
+            ThreadSafeImageViewMetricRow(id: "classicfallback", title: "Classic Fallbacks", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.classic.fallback"])),
             ThreadSafeImageViewMetricRow(id: "metal4fallback", title: "Metal 4 Fallbacks", value: Self.string(for: snapshot.counters["threadSafeImageView.batch.metal4.fallback"])),
             ThreadSafeImageViewMetricRow(id: "cgimagehit", title: "CGImage Cache Hits", value: Self.string(for: snapshot.counters["promise.cgImage.sourceTextureCache.hit"])),
             ThreadSafeImageViewMetricRow(id: "cgimagemiss", title: "CGImage Cache Misses", value: Self.string(for: snapshot.counters["promise.cgImage.sourceTextureCache.miss"]))
         ]
+    }
+
+    private func scheduleAutoBenchmarkIfNeeded() {
+        guard let benchmark = ThreadSafeImageViewStressLaunchOptions.autoBenchmark, !hasScheduledAutoBenchmark else {
+            return
+        }
+        if workload == .preparedFrames && !preparedFramesReady {
+            return
+        }
+        hasScheduledAutoBenchmark = true
+        autoBenchmarkStartWorkItem?.cancel()
+        autoBenchmarkFinishWorkItem?.cancel()
+
+        let startWorkItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.context.resetPerformanceStatistics()
+            self.refreshMetrics()
+            NSLog("MTI_THREAD_SAFE_BENCHMARK_BEGIN %@", self.benchmarkDescriptor())
+
+            let finishWorkItem = DispatchWorkItem { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.refreshMetrics()
+                NSLog("MTI_THREAD_SAFE_BENCHMARK %@", self.benchmarkReport())
+                if benchmark.exitsWhenFinished {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        exit(EXIT_SUCCESS)
+                    }
+                }
+            }
+            self.autoBenchmarkFinishWorkItem = finishWorkItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + benchmark.durationSeconds, execute: finishWorkItem)
+        }
+
+        autoBenchmarkStartWorkItem = startWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + benchmark.warmupSeconds, execute: startWorkItem)
+    }
+
+    private func benchmarkDescriptor() -> String {
+        [
+            "mode=\(schedulingMode.rawValue)",
+            "workload=\(workload.rawValue)",
+            "views=\(tileCount)",
+            "updates=\(Int(updatesPerSecond))",
+            "metal4=\(prefersMetal4BatchedSubmission ? "on" : "off")"
+        ].joined(separator: " ")
+    }
+
+    private func benchmarkReport() -> String {
+        let snapshot = context.performanceStatisticsSnapshot()
+        let report: [String: Any] = [
+            "schedulingMode": schedulingMode.rawValue,
+            "workload": workload.rawValue,
+            "tileCount": tileCount,
+            "updatesPerSecond": updatesPerSecond,
+            "prefersMetal4BatchedSubmission": prefersMetal4BatchedSubmission,
+            "preparedFramesReady": preparedFramesReady,
+            "counters": snapshot.counters,
+            "durations": snapshot.durations
+        ]
+        guard JSONSerialization.isValidJSONObject(report),
+              let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{\"error\":\"serialization_failed\"}"
+        }
+        return string
     }
 
     private static func string(for number: NSNumber?) -> String {
